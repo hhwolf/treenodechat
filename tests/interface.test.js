@@ -108,6 +108,11 @@ test('resolves a context conflict using inherited project intent', (t) => {
   click(window, '#applyConflict');
   assert.equal(document.querySelector('#inlineConflict'), null);
   assert.match(document.querySelector('.toast').textContent, /24h target selected/);
+  click(window, '#contextRegistry');
+  const oldTarget = document.querySelector('[data-context-title="Detection target: 4 hours"]');
+  assert.match(oldTarget.textContent, /Excluded/);
+  assert.doesNotMatch(oldTarget.textContent, /Conflict/);
+  assert.equal(document.querySelector('#resolveContext').textContent, 'Change resolution');
 });
 
 test('partially accepts changes and performs a checkpointed merge', (t) => {
@@ -160,12 +165,15 @@ test('supervises jobs and resolves an agent exception', (t) => {
   const pause = click(window, '.job-action:not(.resolve-exception)');
   assert.equal(pause.textContent, 'Resume');
 
+  click(window, '.agent-row[data-agent="Knox"]');
   click(window, '#exceptionCard');
   click(window, 'input[name="exception"][value="public"]');
   click(window, '#resolveException');
   assert.match(document.querySelector('.toast:last-child').textContent, /public sources/);
   assert.equal(document.querySelector('#exceptionCard'), null);
   assert.equal(document.querySelector('.attention-job'), null);
+  assert.equal(document.querySelector('#passportState').textContent, 'Running public-source scan');
+  assert.equal(document.querySelector('#passportAssumptions').textContent, 'Internal source excluded');
 });
 
 test('converts chat output into a durable workspace object', (t) => {
@@ -195,8 +203,10 @@ test('supports alternate conflict outcomes', async (t) => {
     click(window, '#inlineConflict button');
     click(window, 'input[name="target"][value="4h"]');
     click(window, '#applyConflict');
-    assert.ok(document.querySelector('#inlineConflict'));
+    assert.equal(document.querySelector('#inlineConflict'), null);
     assert.match(document.querySelector('.toast').textContent, /4h target selected/);
+    click(window, '#contextRegistry');
+    assert.match(document.querySelector('[data-context-title="Detection target: 4 hours"]').textContent, /Approved override/);
   });
 
   await t.test('converts uncertainty into an open question', (subtest) => {

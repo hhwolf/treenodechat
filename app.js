@@ -160,6 +160,18 @@ function openIntent() {
 }
 
 function openContextRegistry() {
+  const targetContext = contextConflictStatus === '24h'
+    ? { meta: 'Owner: Knox · older policy · excluded by project intent', label: 'Excluded', className: '' }
+    : contextConflictStatus === '4h'
+      ? { meta: 'Owner: Knox · explicit approved branch override', label: 'Approved override', className: '' }
+      : contextConflictStatus === 'question'
+        ? { meta: 'Owner: Knox · target paused pending a decision', label: 'Open question', className: 'assumption' }
+        : { meta: 'Owner: Knox · inherited incident policy · overrides target', label: 'Conflict', className: 'assumption' };
+  const inheritanceLine = contextConflictStatus === '24h'
+    ? '  ↳ branch/contrarian/incident-policy.md  [EXCLUDED: project target wins]'
+    : contextConflictStatus === 'question'
+      ? '  ↳ branch/contrarian/incident-policy.md  [PAUSED: open question]'
+      : '  ↳ branch/contrarian/incident-policy.md  [OVERRIDES: detection target]';
   openModal({
     title: 'Context registry',
     subtitle: 'Every item has an owner, source, scope, and visible inheritance path.',
@@ -167,17 +179,17 @@ function openContextRegistry() {
       <div class="context-list">
         <button class="context-item" data-context-title="Evaluation incidents · Q2" data-context-scope="Project"><div><strong>Evaluation incidents · Q2</strong><small>Owner: Henry · Internal review · Updated Aug 14</small></div><span class="scope-tag">Project</span><span class="reliability">High reliability</span></button>
         <button class="context-item" data-context-title="Detection target: 24 hours" data-context-scope="Project"><div><strong>Detection target: 24 hours</strong><small>Owner: ML Platform · Intent constraint</small></div><span class="scope-tag">Project</span><span class="reliability">Authoritative</span></button>
-        <button class="context-item" data-context-title="Detection target: 4 hours" data-context-scope="Branch"><div><strong>Detection target: 4 hours</strong><small>Owner: Knox · inherited incident policy · overrides target</small></div><span class="scope-tag branch">Contrarian</span><span class="reliability assumption">Conflict</span></button>
+        <button class="context-item" data-context-title="Detection target: 4 hours" data-context-scope="Branch"><div><strong>Detection target: 4 hours</strong><small>${targetContext.meta}</small></div><span class="scope-tag branch">Contrarian</span><span class="reliability ${targetContext.className}">${targetContext.label}</span></button>
         <button class="context-item" data-context-title="Vendor evaluation survey" data-context-scope="Branch"><div><strong>Vendor evaluation survey</strong><small>Owner: Mira · External source · Updated Aug 21</small></div><span class="scope-tag branch">Literature</span><span class="reliability">Medium reliability</span></button>
       </div>
       <div class="context-package">INHERITANCE PREVIEW
 project/intent.md
 project/incidents-q2.pdf
-  ↳ branch/contrarian/incident-policy.md  [OVERRIDES: detection target]
+${inheritanceLine}
 task/challenge-operability.md
 ephemeral/none</div>
     `,
-    footer: `<span>18.4k tokens in selected package.</span><div><button class="cancel-button">Close</button><button class="confirm-button" id="resolveContext">Resolve conflict</button></div>`
+    footer: `<span>18.4k tokens in selected package.</span><div><button class="cancel-button">Close</button><button class="confirm-button" id="resolveContext">${contextConflictStatus === 'unresolved' || contextConflictStatus === 'question' ? 'Resolve conflict' : 'Change resolution'}</button></div>`
   });
   $('.cancel-button', modal).addEventListener('click', closeModal);
   $('#resolveContext', modal).addEventListener('click', openConflictResolver);
@@ -235,7 +247,7 @@ function openConflictResolver() {
     contextConflictStatus = value;
     changes[1].checked = value === '4h';
     closeModal();
-    if (value === '24h') $('#inlineConflict')?.remove();
+    if (value !== 'question') $('#inlineConflict')?.remove();
     showToast(`Context conflict resolved: ${value === 'question' ? 'open question created' : `${value} target selected`}`);
   });
 }
@@ -261,6 +273,13 @@ function openException() {
   $('.cancel-button', modal).addEventListener('click', closeModal);
   $('#resolveException', modal).addEventListener('click', () => {
     const action = $('input[name="exception"]:checked', modal).value;
+    const passportUpdates = action === 'request'
+      ? { state: 'Waiting for access approval', update: 'Updated now', task: 'Paused pending archive approval', assumptions: '1 permission pending' }
+      : action === 'public'
+        ? { state: 'Running public-source scan', update: 'Updated now', task: 'Verify claims with public evidence', assumptions: 'Internal source excluded' }
+        : { state: 'Job cancelled', update: 'Updated now', task: 'No active task', assumptions: 'Partial findings preserved' };
+    Object.assign(agentPassports.Knox, passportUpdates);
+    if ($('.passport-identity h2').textContent === 'Knox') renderAgentPassport('Knox', false);
     closeModal();
     $('#exceptionCard')?.remove();
     $('.attention-job')?.remove();
@@ -519,10 +538,10 @@ const agentPassports = {
   Knox: { initials: 'KX', role: 'Critical reviewer', id: 'agt_4a77', state: 'Blocked by permission', update: 'Updated 1m ago', objective: 'Challenge operability and hidden assumptions', task: 'Verify incident evidence', parent: 'Contrarian review', model: 'GPT-5', autonomy: 'Approval-first', used: '$0.46 · 2m 09s', confidence: '68%', confidenceLabel: 'Moderate', assumptions: '1 source unavailable' }
 };
 
-$$('.agent-row').forEach((row) => row.addEventListener('click', () => {
-  const passport = agentPassports[row.dataset.agent];
+function renderAgentPassport(name, announce = true) {
+  const passport = agentPassports[name];
   $('.agent-avatar').childNodes[0].nodeValue = passport.initials;
-  $('.passport-identity h2').textContent = row.dataset.agent;
+  $('.passport-identity h2').textContent = name;
   $('#passportRole').textContent = passport.role;
   $('#passportId').textContent = passport.id;
   $('#passportState').textContent = passport.state;
@@ -536,8 +555,10 @@ $$('.agent-row').forEach((row) => row.addEventListener('click', () => {
   $('#passportConfidence').textContent = passport.confidence;
   $('#passportConfidenceLabel').textContent = passport.confidenceLabel;
   $('#passportAssumptions').textContent = passport.assumptions;
-  showToast(`${row.dataset.agent}'s operational passport selected`);
-}));
+  if (announce) showToast(`${name}'s operational passport selected`);
+}
+
+$$('.agent-row').forEach((row) => row.addEventListener('click', () => renderAgentPassport(row.dataset.agent)));
 
 $$('.tab').forEach((tab) => tab.addEventListener('click', () => {
   if (tab.classList.contains('add-tab')) {
