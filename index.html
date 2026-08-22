@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#f6f5f1" />
+  <title>Threadline — AI workspace</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;650;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,500;8..60,600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <svg class="svg-sprite" aria-hidden="true">
+    <symbol id="i-command" viewBox="0 0 24 24"><path d="M18 9a3 3 0 1 0-3-3v12a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V6a3 3 0 1 0-3 3h12Z"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 8 4-8 4-8-4 8-4Z"/><path d="m4 12 8 4 8-4M4 17l8 4 8-4"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="6" r="2"/><circle cx="6" cy="19" r="2"/><path d="M6 7v10M8 7c5 0 3 8 8 8h2M18 8v7"/></symbol>
+    <symbol id="i-file" viewBox="0 0 24 24"><path d="M6 3h8l4 4v14H6V3Z"/><path d="M14 3v5h4M9 13h6M9 17h5"/></symbol>
+    <symbol id="i-evidence" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5M8 17h7"/></symbol>
+    <symbol id="i-decision" viewBox="0 0 24 24"><path d="M12 3 4 7v5c0 5 3.4 8 8 9 4.6-1 8-4 8-9V7l-8-4Z"/><path d="m9 12 2 2 4-4"/></symbol>
+    <symbol id="i-agent" viewBox="0 0 24 24"><rect x="5" y="7" width="14" height="12" rx="3"/><path d="M12 3v4M9 12h.01M15 12h.01M9 16h6"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3 2.5 20h19L12 3Z"/><path d="M12 9v5M12 17.5v.01"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7V5Z"/></symbol>
+    <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/></symbol>
+    <symbol id="i-columns" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M12 4v16"/></symbol>
+    <symbol id="i-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol>
+    <symbol id="i-message" viewBox="0 0 24 24"><path d="M4 5h16v12H8l-4 4V5Z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+    <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18"/></symbol>
+    <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M5 12h14M14 7l5 5-5 5"/></symbol>
+    <symbol id="i-bookmark" viewBox="0 0 24 24"><path d="M6 3h12v18l-6-4-6 4V3Z"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.5.5l2-2a5 5 0 0 0-7-7l-1.2 1.2M14 11a5 5 0 0 0-7.5-.5l-2 2a5 5 0 0 0 7 7l1.2-1.2"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h6M14 7h6M4 17h10M18 17h2"/><circle cx="12" cy="7" r="2"/><circle cx="16" cy="17" r="2"/></symbol>
+  </svg>
+
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand" aria-label="Threadline home">
+        <div class="brand-mark"><span></span><span></span><span></span></div>
+        <span>Threadline</span>
+      </div>
+      <div class="project-switcher">
+        <span class="project-glyph">ML</span>
+        <div><strong>ML evaluation strategy</strong><small>Research workspace</small></div>
+        <svg><use href="#i-chevron"/></svg>
+      </div>
+      <button class="command-bar" id="commandButton">
+        <svg><use href="#i-search"/></svg>
+        <span>Search workspace or run a command</span>
+        <kbd>⌘ K</kbd>
+      </button>
+      <div class="top-actions">
+        <div class="sync-state"><span></span> Synced</div>
+        <button class="icon-button" aria-label="Workspace history" data-toast="Opened workspace history"><svg><use href="#i-history"/></svg></button>
+        <button class="avatar-button" aria-label="Account menu">HH</button>
+      </div>
+    </header>
+
+    <aside class="explorer" aria-label="Workspace explorer">
+      <div class="panel-heading">
+        <span>Workspace</span>
+        <div><button class="mini-button" data-toast="Filter workspace"><svg><use href="#i-search"/></svg></button><button class="mini-button" id="newObject"><svg><use href="#i-plus"/></svg></button></div>
+      </div>
+
+      <button class="objective-card" id="intentCard">
+        <div class="objective-top"><span><svg><use href="#i-target"/></svg>Objective</span><span class="intent-score">6/7</span></div>
+        <p>Choose a reliable evaluation strategy for our production ML models.</p>
+        <div class="objective-meta"><span>3 criteria linked</span><span>1 unknown</span></div>
+      </button>
+
+      <nav class="tree" aria-label="Project contents">
+        <div class="tree-section">
+          <button class="tree-section-title"><svg class="chevron open"><use href="#i-chevron"/></svg><span>Intent & context</span><span class="count">8</span></button>
+          <div class="tree-children">
+            <button class="tree-row"><svg><use href="#i-target"/></svg><span>Intent specification</span><span class="dot attention"></span></button>
+            <button class="tree-row" id="contextRegistry"><svg><use href="#i-layers"/></svg><span>Context registry</span><span class="count">7</span></button>
+          </div>
+        </div>
+
+        <div class="tree-section">
+          <div class="tree-section-title"><button class="tree-section-toggle"><svg class="chevron open"><use href="#i-chevron"/></svg><span>Branches</span></button><button class="inline-add" aria-label="Add branch"><svg><use href="#i-plus"/></svg></button></div>
+          <div class="tree-children branch-tree">
+            <button class="tree-row active" data-branch="Synthesis / main"><svg><use href="#i-branch"/></svg><span>Synthesis / main</span><span class="status-icon complete"><svg><use href="#i-check"/></svg></span></button>
+            <div class="branch-indent">
+              <button class="tree-row" data-branch="Literature scan"><span class="branch-line blue"></span><span>Literature scan</span><span class="status-icon running"></span></button>
+              <button class="tree-row" data-branch="Production patterns"><span class="branch-line green"></span><span>Production patterns</span><span class="status-icon complete"><svg><use href="#i-check"/></svg></span></button>
+              <button class="tree-row" data-branch="Contrarian review"><span class="branch-line orange"></span><span>Contrarian review</span><span class="status-icon blocked">!</span></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="tree-section">
+          <button class="tree-section-title"><svg class="chevron open"><use href="#i-chevron"/></svg><span>Artifacts</span><span class="count">5</span></button>
+          <div class="tree-children">
+            <button class="tree-row selected-artifact"><svg><use href="#i-file"/></svg><span>Evaluation strategy</span><small>Draft</small></button>
+            <button class="tree-row"><svg><use href="#i-evidence"/></svg><span>Claim–evidence matrix</span><span class="count">12</span></button>
+            <button class="tree-row"><svg><use href="#i-decision"/></svg><span>Decision log</span><span class="count">4</span></button>
+            <button class="tree-row"><svg><use href="#i-file"/></svg><span>Rollout checklist</span></button>
+          </div>
+        </div>
+
+        <div class="tree-section">
+          <button class="tree-section-title"><svg class="chevron open"><use href="#i-chevron"/></svg><span>Agents</span><span class="count">3</span></button>
+          <div class="tree-children">
+            <button class="tree-row agent-row" data-agent="Mira"><span class="agent-monogram blue">MR</span><span>Mira · Research</span><span class="status-icon running"></span></button>
+            <button class="tree-row agent-row" data-agent="Sage"><span class="agent-monogram green">SG</span><span>Sage · Synthesis</span><span class="status-icon complete"><svg><use href="#i-check"/></svg></span></button>
+            <button class="tree-row agent-row" data-agent="Knox"><span class="agent-monogram orange">KX</span><span>Knox · Critic</span><span class="status-icon blocked">!</span></button>
+          </div>
+        </div>
+      </nav>
+
+      <button class="attention-card" id="exceptionCard">
+        <span class="attention-icon"><svg><use href="#i-alert"/></svg></span>
+        <span><strong>1 exception needs you</strong><small>Source access expired</small></span>
+        <svg class="end-chevron"><use href="#i-chevron"/></svg>
+      </button>
+    </aside>
+
+    <main class="workbench">
+      <div class="tabs-row">
+        <div class="tabs">
+          <button class="tab active"><svg><use href="#i-file"/></svg>Evaluation strategy<span class="unsaved-dot"></span><span class="tab-close">×</span></button>
+          <button class="tab"><svg><use href="#i-columns"/></svg>Branch comparison<span class="tab-close">×</span></button>
+          <button class="tab add-tab" aria-label="New tab"><svg><use href="#i-plus"/></svg></button>
+        </div>
+        <div class="view-actions">
+          <button class="seg-button active" aria-label="Split view"><svg><use href="#i-columns"/></svg></button>
+          <button class="seg-button" aria-label="Focus view"><svg><use href="#i-file"/></svg></button>
+          <span class="divider"></span>
+          <button class="secondary-button" id="reviewChanges"><span class="change-count">7</span> Review changes</button>
+          <button class="primary-button" id="mergeButton">Merge to main <svg><use href="#i-chevron"/></svg></button>
+        </div>
+      </div>
+
+      <div class="breadcrumb-row">
+        <div class="breadcrumbs"><span>ML evaluation strategy</span><svg><use href="#i-chevron"/></svg><span>Synthesis</span><svg><use href="#i-chevron"/></svg><strong>Evaluation strategy</strong></div>
+        <div class="surface-status"><span class="presence"><i></i><i></i><i></i></span><span>3 agents contributed</span><span class="saved"><svg><use href="#i-check"/></svg> Saved 18s ago</span></div>
+      </div>
+
+      <section class="comparison-toolbar" aria-label="Branch comparison controls">
+        <div class="branch-pill"><span class="branch-dot blue"></span><span><small>PRIMARY</small><strong>Synthesis / main</strong></span><svg><use href="#i-chevron"/></svg></div>
+        <div class="compare-label"><span></span>comparing<span></span></div>
+        <div class="branch-pill"><span class="branch-dot orange"></span><span><small>ALTERNATIVE</small><strong>Contrarian review</strong></span><svg><use href="#i-chevron"/></svg></div>
+        <button class="criteria-button" id="criteriaButton"><svg><use href="#i-sliders"/></svg> Criteria <span>4</span></button>
+      </section>
+
+      <div class="document-split">
+        <article class="document-pane primary-document">
+          <div class="doc-label"><span class="branch-dot blue"></span>SYNTHESIS / MAIN <span class="version">v0.7</span><button class="doc-more"><svg><use href="#i-more"/></svg></button></div>
+          <div class="document-content">
+            <div class="doc-kicker">RECOMMENDATION MEMO</div>
+            <h1 contenteditable="true" data-pretext>A layered evaluation strategy for production ML</h1>
+            <p class="dek" contenteditable="true" data-pretext>Combine stable offline gates with live performance signals. No single score is sufficient once models encounter real users and shifting data.</p>
+            <div class="intent-links"><span><svg><use href="#i-link"/></svg>Success criteria</span><span>Reliability</span><span>Detection &lt; 24h</span><span>Cost-aware</span></div>
+
+            <section class="doc-section">
+              <div class="section-number">01</div>
+              <div><h2 contenteditable="true">Use a layered evaluation stack</h2><p contenteditable="true">Treat evaluation as a feedback system, not a launch gate. Each layer answers a different question and catches a different failure mode.</p></div>
+            </section>
+
+            <div class="stack-visual">
+              <div class="stack-row"><span class="stack-index">3</span><div><strong>Live outcomes</strong><small>Business KPIs · user signals · incidents</small></div><span class="cadence">Continuous</span></div>
+              <div class="stack-row"><span class="stack-index">2</span><div><strong>Shadow & canary</strong><small>Drift · calibration · slice regressions</small></div><span class="cadence">Every deploy</span></div>
+              <div class="stack-row"><span class="stack-index">1</span><div><strong>Offline evaluation</strong><small>Golden sets · behavioral checks · red team</small></div><span class="cadence">Every change</span></div>
+            </div>
+
+            <section class="doc-section compact">
+              <div class="section-number">02</div>
+              <div><h2 contenteditable="true">Optimize for fast failure detection</h2><p contenteditable="true">Page owners when a critical slice crosses its guardrail. Route uncertain shifts to investigation rather than blocking every release.</p></div>
+            </section>
+
+            <button class="decision-callout" data-inspector="decision">
+              <span class="decision-icon"><svg><use href="#i-decision"/></svg></span>
+              <span><small>DECISION · D-004</small><strong>Adopt layered gates over a composite score</strong><em>High confidence · approved by Henry</em></span>
+              <svg><use href="#i-chevron"/></svg>
+            </button>
+
+            <div class="citation-row"><button data-inspector="evidence"><sup>1</sup> Evidently AI survey, 2025</button><button data-inspector="evidence"><sup>2</sup> Internal incident review, Q2</button></div>
+          </div>
+        </article>
+
+        <article class="document-pane alternative-document">
+          <div class="doc-label"><span class="branch-dot orange"></span>CONTRARIAN REVIEW <span class="version">v0.3</span><button class="doc-more"><svg><use href="#i-more"/></svg></button></div>
+          <div class="document-content">
+            <div class="doc-kicker">CRITICAL RESPONSE</div>
+            <h1 contenteditable="true" data-pretext>The layered model may be too slow to operate</h1>
+            <p class="dek" contenteditable="true" data-pretext>The proposal is sound in theory, but it assumes a level of evaluation maturity the current team does not yet have.</p>
+
+            <div class="challenge-card">
+              <span class="challenge-label">CORE CHALLENGE</span>
+              <p>Three evaluation layers create three ownership boundaries. Without a single accountable operator, failures will fall between teams.</p>
+            </div>
+
+            <section class="doc-section">
+              <div class="section-number">01</div>
+              <div><h2 contenteditable="true">Start with one operational loop</h2><p contenteditable="true">Ship a focused canary process first. Prove the team can detect, triage, and resolve regressions before expanding the system.</p></div>
+            </section>
+
+            <div class="alternative-plan">
+              <div class="alt-step"><span>Now</span><strong>Canary + 5 critical slices</strong><small>One owner · two weeks</small></div>
+              <div class="alt-arrow"><svg><use href="#i-arrow"/></svg></div>
+              <div class="alt-step"><span>Then</span><strong>Add only proven signals</strong><small>Expand from incidents</small></div>
+            </div>
+
+            <section class="doc-section compact">
+              <div class="section-number">02</div>
+              <div><h2 contenteditable="true">Challenge the 24-hour target</h2><p contenteditable="true">Fast detection is only useful if the team can act. The memo needs an explicit response owner and escalation path.</p></div>
+            </section>
+
+            <div class="conflict-callout" id="inlineConflict">
+              <span><svg><use href="#i-alert"/></svg></span>
+              <div><small>CONTEXT CONFLICT</small><strong>Response-time target differs</strong><p>Project says 24h. This branch uses 4h from an older incident policy.</p></div>
+              <button>Resolve</button>
+            </div>
+
+            <div class="review-note"><span class="agent-monogram orange">KX</span><div><strong>Knox</strong><span>Left 3 challenges · 1 needs a decision</span></div><button>View notes</button></div>
+          </div>
+        </article>
+      </div>
+    </main>
+
+    <aside class="inspector" aria-label="Inspector">
+      <div class="inspector-tabs"><button class="active" data-panel="passport">Passport</button><button data-panel="activity">Activity</button><button data-panel="context">Context</button><button class="close-inspector">×</button></div>
+
+      <div class="inspector-content" id="passportPanel">
+        <div class="passport-identity">
+          <div class="agent-avatar">SG<span class="online-dot"></span></div>
+          <div><div class="eyebrow">SELECTED AGENT</div><h2>Sage</h2><p><span id="passportRole">Synthesis lead</span> · <span class="id-text" id="passportId">agt_82f1</span></p></div>
+          <button class="mini-button"><svg><use href="#i-more"/></svg></button>
+        </div>
+
+        <div class="passport-state"><span class="state-pill"><i></i><span id="passportState">Waiting for review</span></span><span id="passportUpdate">Updated 18s ago</span></div>
+
+        <section class="inspector-section">
+          <h3>Assignment</h3>
+          <dl class="property-list">
+            <div><dt>Objective</dt><dd id="passportObjective">Synthesize a defensible evaluation strategy</dd></div>
+            <div><dt>Current task</dt><dd><span class="task-link" id="passportTask">Draft recommendation memo</span></dd></div>
+            <div><dt>Parent</dt><dd id="passportParent">Synthesis / main</dd></div>
+          </dl>
+        </section>
+
+        <section class="inspector-section">
+          <h3>Capabilities & limits</h3>
+          <div class="capability-grid"><span>Web research</span><span>Read files</span><span>Draft artifacts</span><span>Compare branches</span></div>
+          <div class="limit-row"><svg><use href="#i-lock"/></svg><div><strong>Approval required</strong><small>External actions · merge · delete</small></div></div>
+        </section>
+
+        <section class="inspector-section">
+          <h3>Operating context <button id="previewContext">Preview package</button></h3>
+          <div class="context-stat-row"><div><strong>7</strong><span>items</span></div><div><strong>18.4k</strong><span>tokens</span></div><div><strong>2</strong><span>sources</span></div></div>
+          <div class="scope-row"><span>Project</span><div class="scope-bar"><i style="width:72%"></i></div><em>5 items</em></div>
+          <div class="scope-row"><span>Branch</span><div class="scope-bar"><i style="width:34%"></i></div><em>2 items</em></div>
+        </section>
+
+        <section class="inspector-section">
+          <h3>Model & budget</h3>
+          <dl class="property-list compact-list">
+            <div><dt>Model</dt><dd id="passportModel">Claude Sonnet 4</dd></div>
+            <div><dt>Autonomy</dt><dd><span class="autonomy" id="passportAutonomy">Guided</span></dd></div>
+            <div><dt>Used</dt><dd id="passportUsed">$1.84 · 6m 12s</dd></div>
+          </dl>
+          <div class="budget-bar"><i></i></div><div class="budget-caption"><span>37% of $5.00 budget</span><span>Resets per task</span></div>
+        </section>
+
+        <section class="inspector-section last">
+          <h3>Confidence</h3>
+          <div class="confidence-row"><strong id="passportConfidence">82%</strong><div><span id="passportConfidenceLabel">High</span><small id="passportAssumptions">2 unresolved assumptions</small></div></div>
+          <button class="text-button" id="rationaleButton">View rationale summary <svg><use href="#i-chevron"/></svg></button>
+        </section>
+      </div>
+    </aside>
+
+    <section class="operations-tray" aria-label="Operations and review">
+      <button class="tray-summary" id="trayToggle">
+        <span class="tray-label"><svg><use href="#i-play"/></svg>Operations</span>
+        <span class="tray-stat"><i class="pulse-dot"></i><strong>2 running</strong></span>
+        <span class="tray-stat warning"><svg><use href="#i-alert"/></svg><strong>1 needs attention</strong></span>
+        <span class="tray-stat">3 queued</span>
+        <span class="tray-cost">$3.42 today · 18m</span>
+        <svg class="tray-chevron"><use href="#i-chevron"/></svg>
+      </button>
+      <div class="tray-jobs">
+        <div class="job-row"><span class="agent-monogram blue">MR</span><div class="job-info"><strong>Expand source coverage</strong><small>Literature scan · 18 of 24 sources</small></div><div class="job-progress"><i style="width:74%"></i></div><span class="job-time">2m 18s</span><button class="job-action">Pause</button></div>
+        <div class="job-row"><span class="agent-monogram green">SG</span><div class="job-info"><strong>Validate claims</strong><small>Synthesis · checking citations</small></div><div class="job-progress"><i style="width:48%"></i></div><span class="job-time">1m 04s</span><button class="job-action">Pause</button></div>
+        <div class="job-row attention-job"><span class="attention-icon"><svg><use href="#i-alert"/></svg></span><div class="job-info"><strong>Source access expired</strong><small>Contrarian review · action required</small></div><span></span><span class="job-time">Now</span><button class="job-action resolve-exception">Resolve</button></div>
+      </div>
+    </section>
+
+    <button class="chat-launcher" id="chatLauncher"><svg><use href="#i-message"/></svg><span>Ask workspace</span><kbd>⌘ J</kbd></button>
+    <aside class="chat-panel" id="chatPanel" aria-label="Workspace chat">
+      <div class="chat-header"><div><strong>Ask workspace</strong><small>Uses selected branch context</small></div><button id="closeChat">×</button></div>
+      <div class="chat-scope"><span class="branch-dot blue"></span>Synthesis / main <svg><use href="#i-chevron"/></svg></div>
+      <div class="chat-messages">
+        <div class="chat-message user">What would make this recommendation easier to operate?</div>
+        <div class="chat-message assistant" draggable="true" id="draggableMessage"><span class="drag-hint">Drag to save</span>Assign one owner per evaluation layer and add a 30-day rollout checkpoint. The contrarian branch provides useful evidence for both changes.</div>
+      </div>
+      <div class="durable-dropzones"><small>DROP AS DURABLE OBJECT</small><div><button data-drop="Decision">Decision</button><button data-drop="Context">Context</button><button data-drop="Task">Task</button></div></div>
+      <form class="chat-input" id="chatForm"><textarea aria-label="Message" placeholder="Ask about this work…"></textarea><button aria-label="Send"><svg><use href="#i-arrow"/></svg></button></form>
+    </aside>
+  </div>
+
+  <div class="modal-backdrop" id="modalBackdrop" hidden>
+    <section class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle"></section>
+  </div>
+  <div class="toast-region" id="toastRegion" aria-live="polite"></div>
+  <script src="app.js"></script>
+  <script type="module" src="pretext-layout.js"></script>
+</body>
+</html>
