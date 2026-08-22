@@ -25,7 +25,9 @@ function showToast(message, type = 'success') {
 }
 
 function openModal({ title, subtitle = '', body, footer = '', className = '' }) {
-  modalOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  if (backdrop.hidden) {
+    modalOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
   $('.app-shell').inert = true;
   modal.className = `modal ${className}`;
   modal.innerHTML = `
@@ -231,6 +233,7 @@ function openConflictResolver() {
   $('#applyConflict', modal).addEventListener('click', () => {
     const value = $('input[name="target"]:checked', modal).value;
     contextConflictStatus = value;
+    changes[1].checked = value === '4h';
     closeModal();
     if (value === '24h') $('#inlineConflict')?.remove();
     showToast(`Context conflict resolved: ${value === 'question' ? 'open question created' : `${value} target selected`}`);
@@ -279,9 +282,11 @@ const changes = [
 ];
 
 function openChanges() {
-  const rows = changes.map((change, index) => `
+  const availableChanges = changes.map((change, index) => ({ change, index })).filter(({ change }) => !change.merged);
+  const targetLocked = contextConflictStatus === '24h' || contextConflictStatus === '4h' || contextConflictStatus === 'question';
+  const rows = availableChanges.map(({ change, index }) => `
     <label class="change-item">
-      <input class="change-check" type="checkbox" data-change-index="${index}" ${change.checked ? 'checked' : ''}>
+      <input class="change-check" type="checkbox" data-change-index="${index}" ${change.checked ? 'checked' : ''} ${index === 1 && targetLocked ? 'disabled' : ''}>
       <span><strong>${change.title}</strong><p>${change.detail}</p>${change.diff ? `<div class="diff-block"><div class="remove">− detect critical regressions within 24 hours</div><div class="add">+ detect critical regressions within 4 hours</div></div>` : ''}</span>
       <em>${change.kind}</em>
     </label>
@@ -293,11 +298,11 @@ function openChanges() {
       <div class="changes-summary"><div><strong>7</strong><span>proposed</span></div><div><strong>4</strong><span>artifacts touched</span></div><div><strong>3</strong><span>agents contributed</span></div><div><strong>1</strong><span>context conflict</span></div></div>
       <div class="change-list">${rows}</div>
     `,
-    footer: `<span id="selectionSummary">4 of 5 visible changes selected</span><div><button class="cancel-button">Cancel</button><button class="confirm-button" id="acceptChanges">Accept selected</button></div>`
+    footer: `<span id="selectionSummary">${availableChanges.filter(({ change }) => change.checked).length} of ${availableChanges.length} visible changes selected</span><div><button class="cancel-button">Cancel</button><button class="confirm-button" id="acceptChanges">Accept selected</button></div>`
   });
   const updateCount = () => {
     const count = $$('.change-check:checked', modal).length;
-    $('#selectionSummary', modal).textContent = `${count} of ${changes.length} visible changes selected`;
+    $('#selectionSummary', modal).textContent = `${count} of ${availableChanges.length} visible changes selected`;
     $('#acceptChanges', modal).textContent = `Accept ${count} selected`;
   };
   $$('.change-check', modal).forEach((checkbox) => checkbox.addEventListener('change', updateCount));
@@ -306,16 +311,16 @@ function openChanges() {
     $$('.change-check', modal).forEach((checkbox) => {
       changes[Number(checkbox.dataset.changeIndex)].checked = checkbox.checked;
     });
-    const selected = changes.filter((change) => change.checked).length;
+    const selected = changes.filter((change) => change.checked && !change.merged).length;
     closeModal();
-    $('.change-count').textContent = Math.max(0, 7 - selected);
     showToast(`${selected} changes accepted · ${changes.length - selected} preserved for review`);
   });
 }
 
 function openMerge() {
-  const accepted = changes.filter((change) => change.checked);
-  const rejected = changes.filter((change) => !change.checked);
+  const accepted = changes.filter((change) => change.checked && !change.merged);
+  const rejected = changes.filter((change) => !change.checked && !change.merged);
+  const conflictBlocksMerge = contextConflictStatus === 'unresolved' || contextConflictStatus === 'question';
   const conflictCopy = contextConflictStatus === 'question'
     ? 'One open question remains and will be linked to the merged artifact.'
     : contextConflictStatus === '4h'
@@ -338,12 +343,14 @@ function openMerge() {
         </dl>
       </div>
     `,
-    footer: `<span>Rollback point: “Before contrarian merge”.</span><div><button class="cancel-button">Cancel</button><button class="confirm-button" id="confirmMerge" ${accepted.length ? '' : 'disabled'}>${accepted.length ? 'Create checkpoint & merge' : 'Select changes first'}</button></div>`
+    footer: `<span>Rollback point: “Before contrarian merge”.</span><div><button class="cancel-button">Cancel</button><button class="confirm-button" id="confirmMerge" ${accepted.length && !conflictBlocksMerge ? '' : 'disabled'}>${conflictBlocksMerge ? 'Resolve conflict first' : accepted.length ? 'Create checkpoint & merge' : 'Select changes first'}</button></div>`
   });
   $('.cancel-button', modal).addEventListener('click', closeModal);
   $('#confirmMerge', modal).addEventListener('click', () => {
+    accepted.forEach((change) => { change.merged = true; });
     closeModal();
     showToast(`Merged ${accepted.length} changes · checkpoint created`);
+    $('.change-count').textContent = changes.filter((change) => !change.merged).length + 2;
     $('.unsaved-dot').remove();
   });
 }

@@ -114,6 +114,8 @@ test('partially accepts changes and performs a checkpointed merge', (t) => {
   const window = setup(t);
   const { document, Event } = window;
 
+  click(window, '#inlineConflict button');
+  click(window, '#applyConflict');
   click(window, '#reviewChanges');
   const selected = [...document.querySelectorAll('.change-check:checked')];
   assert.equal(selected.length, 4);
@@ -121,7 +123,7 @@ test('partially accepts changes and performs a checkpointed merge', (t) => {
   selected[0].dispatchEvent(new Event('change', { bubbles: true }));
   assert.equal(document.querySelector('#acceptChanges').textContent, 'Accept 3 selected');
   click(window, '#acceptChanges');
-  assert.match(document.querySelector('.toast').textContent, /3 changes accepted/);
+  assert.match(document.querySelector('.toast:last-child').textContent, /3 changes accepted/);
 
   click(window, '#reviewChanges');
   assert.equal(document.querySelectorAll('.change-check:checked').length, 3);
@@ -133,6 +135,10 @@ test('partially accepts changes and performs a checkpointed merge', (t) => {
   click(window, '#confirmMerge');
   assert.equal(document.querySelector('.unsaved-dot'), null);
   assert.match(document.querySelector('.toast:last-child').textContent, /checkpoint created/);
+
+  click(window, '#mergeButton');
+  assert.equal(document.querySelector('#confirmMerge').disabled, true);
+  assert.match(document.querySelector('#confirmMerge').textContent, /Select changes first/);
 });
 
 test('restores a checkpoint while preserving a recovery branch', (t) => {
@@ -334,6 +340,36 @@ test('uses valid branch controls and traps modal keyboard focus', (t) => {
   first.focus();
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Tab', shiftKey: true, bubbles: true }));
   assert.equal(document.activeElement, last);
+});
+
+test('blocks merge until the context conflict is resolved', (t) => {
+  const window = setup(t);
+  const { document } = window;
+  click(window, '#mergeButton');
+  assert.equal(document.querySelector('#confirmMerge').disabled, true);
+  assert.match(document.querySelector('#confirmMerge').textContent, /Resolve conflict first/);
+});
+
+test('preserves the original focus owner through multi-step modals', (t) => {
+  const window = setup(t);
+  const { document } = window;
+  const opener = document.querySelector('#newObject');
+  opener.focus();
+  opener.click();
+  click(window, '#generateIntent');
+  click(window, '#approveIntent');
+  assert.equal(document.activeElement, opener);
+});
+
+test('gives icon-only controls accessible names', () => {
+  const dom = new JSDOM(html);
+  const unnamed = [...dom.window.document.querySelectorAll('button')].filter((button) => {
+    const text = button.textContent.trim();
+    const label = button.getAttribute('aria-label');
+    return !text && !label;
+  });
+  assert.deepEqual(unnamed, []);
+  dom.window.close();
 });
 
 test('autosaves edited artifact text', async (t) => {

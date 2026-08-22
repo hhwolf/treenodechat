@@ -65,7 +65,7 @@
     <aside class="explorer" aria-label="Workspace explorer">
       <div class="panel-heading">
         <span>Workspace</span>
-        <div><button class="mini-button" data-toast="Filter workspace"><svg><use href="#i-search"/></svg></button><button class="mini-button" id="newObject"><svg><use href="#i-plus"/></svg></button></div>
+        <div><button class="mini-button" aria-label="Filter workspace" data-toast="Filter workspace"><svg><use href="#i-search"/></svg></button><button class="mini-button" id="newObject" aria-label="Create workspace"><svg><use href="#i-plus"/></svg></button></div>
       </div>
 
       <button class="objective-card" id="intentCard">
@@ -152,7 +152,7 @@
 
       <div class="document-split">
         <article class="document-pane primary-document">
-          <div class="doc-label"><span class="branch-dot blue"></span>SYNTHESIS / MAIN <span class="version">v0.7</span><button class="doc-more"><svg><use href="#i-more"/></svg></button></div>
+          <div class="doc-label"><span class="branch-dot blue"></span>SYNTHESIS / MAIN <span class="version">v0.7</span><button class="doc-more" aria-label="Synthesis document actions"><svg><use href="#i-more"/></svg></button></div>
           <div class="document-content">
             <div class="doc-kicker">RECOMMENDATION MEMO</div>
             <h1 contenteditable="true" data-pretext>A layered evaluation strategy for production ML</h1>
@@ -186,7 +186,7 @@
         </article>
 
         <article class="document-pane alternative-document">
-          <div class="doc-label"><span class="branch-dot orange"></span>CONTRARIAN REVIEW <span class="version">v0.3</span><button class="doc-more"><svg><use href="#i-more"/></svg></button></div>
+          <div class="doc-label"><span class="branch-dot orange"></span>CONTRARIAN REVIEW <span class="version">v0.3</span><button class="doc-more" aria-label="Contrarian document actions"><svg><use href="#i-more"/></svg></button></div>
           <div class="document-content">
             <div class="doc-kicker">CRITICAL RESPONSE</div>
             <h1 contenteditable="true" data-pretext>The layered model may be too slow to operate</h1>
@@ -226,13 +226,13 @@
     </main>
 
     <aside class="inspector" aria-label="Inspector">
-      <div class="inspector-tabs"><button class="active" data-panel="passport">Passport</button><button data-panel="activity">Activity</button><button data-panel="context">Context</button><button class="close-inspector">×</button></div>
+      <div class="inspector-tabs"><button class="active" data-panel="passport">Passport</button><button data-panel="activity">Activity</button><button data-panel="context">Context</button><button class="close-inspector" aria-label="Close inspector">×</button></div>
 
       <div class="inspector-content" id="passportPanel">
         <div class="passport-identity">
           <div class="agent-avatar">SG<span class="online-dot"></span></div>
           <div><div class="eyebrow">SELECTED AGENT</div><h2>Sage</h2><p><span id="passportRole">Synthesis lead</span> · <span class="id-text" id="passportId">agt_82f1</span></p></div>
-          <button class="mini-button"><svg><use href="#i-more"/></svg></button>
+          <button class="mini-button" aria-label="Agent passport actions"><svg><use href="#i-more"/></svg></button>
         </div>
 
         <div class="passport-state"><span class="state-pill"><i></i><span id="passportState">Waiting for review</span></span><span id="passportUpdate">Updated 18s ago</span></div>
@@ -295,7 +295,7 @@
 
     <button class="chat-launcher" id="chatLauncher"><svg><use href="#i-message"/></svg><span>Ask workspace</span><kbd>⌘ J</kbd></button>
     <aside class="chat-panel" id="chatPanel" aria-label="Workspace chat">
-      <div class="chat-header"><div><strong>Ask workspace</strong><small>Uses selected branch context</small></div><button id="closeChat">×</button></div>
+      <div class="chat-header"><div><strong>Ask workspace</strong><small>Uses selected branch context</small></div><button id="closeChat" aria-label="Close workspace chat">×</button></div>
       <div class="chat-scope"><span class="branch-dot blue"></span>Synthesis / main <svg><use href="#i-chevron"/></svg></div>
       <div class="chat-messages">
         <div class="chat-message user">What would make this recommendation easier to operate?</div>
