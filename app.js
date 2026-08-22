@@ -229,14 +229,15 @@ function openContextEditor(title, scope) {
 }
 
 function openConflictResolver() {
+  const selectedTarget = contextConflictStatus === 'unresolved' ? '24h' : contextConflictStatus;
   openModal({
     title: 'Resolve context conflict',
     subtitle: 'Contrarian review inherited an older response target. Choose the rule this branch should use.',
     body: `
       <div class="exception-options">
-        <label class="exception-option"><input type="radio" name="target" value="24h" checked><span><strong>Use project target: 24 hours</strong><small>Remove the branch override and keep inherited project intent.</small></span></label>
-        <label class="exception-option"><input type="radio" name="target" value="4h"><span><strong>Keep branch override: 4 hours</strong><small>Preserve the challenge, clearly mark it as a branch-level exception.</small></span></label>
-        <label class="exception-option"><input type="radio" name="target" value="question"><span><strong>Convert to an open question</strong><small>Pause affected claims until the owner makes an intent-level decision.</small></span></label>
+        <label class="exception-option"><input type="radio" name="target" value="24h" ${selectedTarget === '24h' ? 'checked' : ''}><span><strong>Use project target: 24 hours</strong><small>Remove the branch override and keep inherited project intent.</small></span></label>
+        <label class="exception-option"><input type="radio" name="target" value="4h" ${selectedTarget === '4h' ? 'checked' : ''}><span><strong>Keep branch override: 4 hours</strong><small>Preserve the challenge, clearly mark it as a branch-level exception.</small></span></label>
+        <label class="exception-option"><input type="radio" name="target" value="question" ${selectedTarget === 'question' ? 'checked' : ''}><span><strong>Convert to an open question</strong><small>Pause affected claims until the owner makes an intent-level decision.</small></span></label>
       </div>
     `,
     footer: `<span>Preview: 3 claims and 1 task will update.</span><div><button class="cancel-button">Cancel</button><button class="confirm-button" id="applyConflict">Apply resolution</button></div>`
@@ -279,6 +280,9 @@ function openException() {
         ? { state: 'Running public-source scan', update: 'Updated now', task: 'Verify claims with public evidence', assumptions: 'Internal source excluded' }
         : { state: 'Job cancelled', update: 'Updated now', task: 'No active task', assumptions: 'Partial findings preserved' };
     Object.assign(agentPassports.Knox, passportUpdates);
+    const knoxStatus = $('.agent-row[data-agent="Knox"] .status-icon');
+    knoxStatus.className = `status-icon ${action === 'public' ? 'running' : action === 'cancel' ? 'complete' : 'blocked'}`;
+    knoxStatus.textContent = action === 'public' ? '' : action === 'cancel' ? '✓' : '!';
     if ($('.passport-identity h2').textContent === 'Knox') renderAgentPassport('Knox', false);
     closeModal();
     $('#exceptionCard')?.remove();

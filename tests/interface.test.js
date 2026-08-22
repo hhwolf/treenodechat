@@ -174,6 +174,9 @@ test('supervises jobs and resolves an agent exception', (t) => {
   assert.equal(document.querySelector('.attention-job'), null);
   assert.equal(document.querySelector('#passportState').textContent, 'Running public-source scan');
   assert.equal(document.querySelector('#passportAssumptions').textContent, 'Internal source excluded');
+  const knoxStatus = document.querySelector('.agent-row[data-agent="Knox"] .status-icon');
+  assert.ok(knoxStatus.classList.contains('running'));
+  assert.equal(knoxStatus.textContent, '');
 });
 
 test('converts chat output into a durable workspace object', (t) => {
@@ -207,6 +210,8 @@ test('supports alternate conflict outcomes', async (t) => {
     assert.match(document.querySelector('.toast').textContent, /4h target selected/);
     click(window, '#contextRegistry');
     assert.match(document.querySelector('[data-context-title="Detection target: 4 hours"]').textContent, /Approved override/);
+    click(window, '#resolveContext');
+    assert.equal(document.querySelector('input[name="target"]:checked').value, '4h');
   });
 
   await t.test('converts uncertainty into an open question', (subtest) => {
