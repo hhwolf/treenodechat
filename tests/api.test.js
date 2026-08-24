@@ -1,0 +1,143 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { createApiHandler } from '../server/app.js';
+import { createStore } from '../server/store.js';
+
+async function setup(t, { withAgentRuntime = false } = {}) {
+  const store = createStore(':memory:');
+  const agentRuntime = withAgentRuntime ? {
+    adapterInfo: () => ({ id: 'test', name: 'Test agent', available: true, version: '1.0' }),
+    start: (projectId, branchId, task) => store.createAgentRun(projectId, branchId, { adapter: 'test', task, worktreePath: '/tmp/test-agent-run' }),
+    control: (projectId, runId, action) => store.updateAgentRun(projectId, runId, { status: action === 'pause' ? 'paused' : action === 'resume' ? 'running' : 'cancelled' })
+  } : undefined;
+  const handler = createApiHandler(store, { agentRuntime });
+  const server = createServer(async (request, response) => {
+    if (!(await handler(request, response))) {
+      response.writeHead(404);
+      response.end();
+    }
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  const base = `http://127.0.0.1:${address.port}`;
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    store.close();
+  });
+  const request = async (path, options = {}) => {
+    const response = await fetch(`${base}${path}`, {
+      ...options,
+      headers: options.body ? { 'content-type': 'application/json', ...options.headers } : options.headers
+    });
+    return { response, payload: await response.json() };
+  };
+  return { store, request };
+}
+
+test('reports local SQLite health', async (t) => {
+  const { request } = await setup(t);
+  const { response, payload } = await request('/api/health');
+  assert.equal(response.status, 200);
+  assert.deepEqual(payload, { ok: true, persistence: 'sqlite' });
+});
+
+test('creates and retrieves a project through the API', async (t) => {
+  const { request } = await setup(t);
+  const created = await request('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'API project', repoPath: process.cwd(), brief: 'Implement a safe migration' })
+  });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.payload.specSource, 'local');
+  const id = created.payload.project.id;
+  const loaded = await request(`/api/projects/${id}`);
+  assert.equal(loaded.payload.project.name, 'API project');
+  assert.match(loaded.payload.project.intent.objective, /safe migration/);
+  assert.ok(loaded.payload.project.repository.fileCount > 0);
+});
+
+test('drafts clarifying questions without a configured model provider', async (t) => {
+  const { store, request } = await setup(t);
+  const project = store.createProject({ name: 'Draft', brief: 'Refactor the parser' });
+  const drafted = await request(`/api/projects/${project.id}/specs/draft`, { method: 'POST', body: JSON.stringify({ brief: 'Refactor the parser without changing output' }) });
+  assert.equal(drafted.response.status, 200);
+  assert.equal(drafted.payload.source, 'local');
+  assert.ok(drafted.payload.intent.questions.length >= 1);
+  assert.match(drafted.payload.intent.objective, /parser/);
+});
+
+test('returns inherited branch context through the API', async (t) => {
+  const { store, request } = await setup(t);
+  let project = store.createProject({ name: 'Context API', brief: 'Scope context' });
+  const main = project.branches[0];
+  project = store.createBranch(project.id, { parentId: main.id, name: 'Child', context: 'Child-only rule' });
+  const child = project.branches.find((branch) => branch.name === 'Child');
+  const result = await request(`/api/projects/${project.id}/contexts?branchId=${child.id}`);
+  assert.equal(result.response.status, 200);
+  assert.ok(result.payload.contexts.some((item) => item.value === 'Child-only rule'));
+});
+
+test('surfaces invalid operations as actionable client errors', async (t) => {
+  const { store, request } = await setup(t);
+  const project = store.createProject({ name: 'Errors', brief: 'Test errors' });
+  const result = await request(`/api/projects/${project.id}/branches`, { method: 'POST', body: JSON.stringify({ parentId: 'missing', name: 'Invalid' }) });
+  assert.equal(result.response.status, 422);
+  assert.equal(result.payload.error, 'Parent branch not found');
+});
+
+test('rejects cross-origin state changes against the local API', async (t) => {
+  const { request } = await setup(t);
+  const result = await request('/api/projects', {
+    method: 'POST',
+    headers: { origin: 'https://malicious.example' },
+    body: JSON.stringify({ name: 'Should not exist', brief: 'Blocked' })
+  });
+  assert.equal(result.response.status, 403);
+  assert.equal(result.payload.error, 'Cross-origin changes are not allowed');
+});
+
+test('drafts, reviews, and challenges a reasoning focus through the API', async (t) => {
+  const { store, request } = await setup(t);
+  const project = store.createProject({ name: 'Focus API', brief: 'Choose a compatible storage migration' });
+  const drafted = await request(`/api/projects/${project.id}/reasoning/draft`, { method: 'POST', body: '{}' });
+  assert.equal(drafted.response.status, 200);
+  assert.equal(drafted.payload.source, 'local');
+  assert.ok(drafted.payload.project.reasoning.some((item) => item.kind === 'approach'));
+  const proposal = drafted.payload.project.reasoning[0];
+  const confirmed = await request(`/api/projects/${project.id}/reasoning/${proposal.id}`, { method: 'PATCH', body: JSON.stringify({ status: 'confirmed' }) });
+  assert.equal(confirmed.payload.project.reasoning.find((item) => item.id === proposal.id).status, 'confirmed');
+  const challenged = await request(`/api/projects/${project.id}/reasoning/challenge`, { method: 'POST', body: '{}' });
+  assert.ok(challenged.payload.project.reasoning.some((item) => item.kind === 'counterpoint'));
+});
+
+test('refreshes repository grounding and produces reviewable branch analysis', async (t) => {
+  const { store, request } = await setup(t);
+  let project = store.createProject({ name: 'Grounded', repoPath: process.cwd(), brief: 'Understand this implementation' });
+  const scanned = await request(`/api/projects/${project.id}/repository/scan`, { method: 'POST', body: '{}' });
+  assert.equal(scanned.response.status, 200);
+  assert.ok(scanned.payload.project.repository.files.some((file) => file === 'package.json'));
+  project = scanned.payload.project;
+  const branch = project.branches[0];
+  const analyzed = await request(`/api/projects/${project.id}/branches/${branch.id}/analyze`, { method: 'POST', body: '{}' });
+  assert.equal(analyzed.response.status, 200);
+  assert.equal(analyzed.payload.source, 'local');
+  assert.equal(analyzed.payload.project.branches[0].status, 'review');
+  assert.ok(analyzed.payload.project.branches[0].output.changes.length >= 2);
+});
+
+test('starts and controls a configured coding agent through the API', async (t) => {
+  const { store, request } = await setup(t, { withAgentRuntime: true });
+  const project = store.createProject({ name: 'Agent API', repoPath: process.cwd(), brief: 'Supervise a coding task' });
+  const branch = project.branches[0];
+  const adapters = await request('/api/adapters');
+  assert.equal(adapters.payload.adapters[0].name, 'Test agent');
+  const started = await request(`/api/projects/${project.id}/branches/${branch.id}/runs`, { method: 'POST', body: JSON.stringify({ task: 'Add one focused test' }) });
+  assert.equal(started.response.status, 202);
+  assert.equal(started.payload.run.status, 'queued');
+  store.addAgentRunEvent(project.id, started.payload.run.id, 'analysis', 'Inspecting tests.');
+  const events = await request(`/api/projects/${project.id}/runs/${started.payload.run.id}/events?after=0`);
+  assert.equal(events.payload.events[0].message, 'Inspecting tests.');
+  const paused = await request(`/api/projects/${project.id}/runs/${started.payload.run.id}`, { method: 'PATCH', body: JSON.stringify({ action: 'pause' }) });
+  assert.equal(paused.payload.run.status, 'paused');
+});
