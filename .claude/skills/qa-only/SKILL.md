@@ -1,1 +1,0 @@
-/Users/henryhe/conductor/repos/mllearning/.claude/skills/gstack/qa-only/SKILL.md

@@ -1,1 +1,0 @@
-/Users/henryhe/conductor/repos/mllearning/.claude/skills/gstack/pair-agent/SKILL.md
