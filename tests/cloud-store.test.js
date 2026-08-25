@@ -46,3 +46,23 @@ test('stores sandbox run evidence atomically and keeps checkpoint snapshots priv
   assert.equal('snapshot' in project.checkpoints[0], false);
   assert.equal(JSON.stringify(project).includes('"snapshot"'), false);
 });
+
+test('selectively merges hosted branch findings and restores the prior checkpoint', async (t) => {
+  const store = setup(t);
+  let project = await store.createProject({ name: 'Hosted recovery', brief: 'Merge only reviewed findings.' });
+  const main = project.branches[0];
+  project = await store.createBranch(project.id, { parentId: main.id, name: 'Alternative' });
+  const alternative = project.branches.find((branch) => branch.name === 'Alternative');
+  project = await store.updateBranch(project.id, alternative.id, { status: 'review', output: { changes: [
+    { id: 'accepted', title: 'Accepted', detail: 'Use this.' },
+    { id: 'rejected', title: 'Rejected', detail: 'Leave this behind.' }
+  ] } });
+  const merged = await store.mergeBranch(project.id, alternative.id, main.id, ['accepted']);
+  const checkpoint = merged.checkpoints[0];
+
+  assert.deepEqual(merged.branches.find((branch) => branch.id === main.id).output.changes.map((change) => change.id), ['accepted']);
+  assert.equal(merged.branches.find((branch) => branch.id === alternative.id).status, 'merged');
+  const restored = await store.restoreCheckpoint(project.id, checkpoint.id);
+  assert.equal(restored.branches.find((branch) => branch.id === alternative.id).status, 'review');
+  assert.deepEqual(restored.branches.find((branch) => branch.id === main.id).output.changes, []);
+});
