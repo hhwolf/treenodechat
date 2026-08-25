@@ -1,44 +1,61 @@
-# Threadline design system
+# Threadline V3 design direction
 
-## Direction
+## Product thesis
 
-Threadline is a desktop IDE for dense, long-running AI work. The interface uses stable spatial regions, compact controls, visible provenance, and restrained status accents. It avoids chat-first layouts, decorative avatars, gradients, and ornamental motion.
+Threadline is a persistent operating system for professional, AI-assisted coding projects. It replaces fragile conversation history with shared project state that humans and agents can inspect, branch, compare, merge, and recover.
 
-## Typography
+The first users are senior engineers and technical solo founders doing multi-day work in an existing codebase.
 
-- UI: Inter, 400–700
-- Artifact content: Source Serif 4, 400–600
-- Monospace identifiers: system monospace stack
-- Dense desktop UI labels: 7–12px with high contrast and short line lengths
-- Artifact body copy: 11.5–14px in narrow columns
-- Artifact headings: 17–34px
+## Magic moment
 
-The compact UI scale is intentional for this desktop-only prototype. Important controls use shape, borders, text labels, and persistent placement rather than relying on size or color alone.
+A developer opens a repository, or returns days later, and immediately sees the objective, governing context, active branches, proposed changes, and next required action. The agent receives the same structured understanding without the developer retelling the project.
 
-## Color
+Before committing to a branch, Focus shows a small reviewable reasoning brief: plausible approaches, evidence, assumptions, counterpoints, and the next unresolved question. The AI drafts this structure, but interpretive state becomes durable only after human confirmation.
 
-- Canvas: `#F6F5F1`
-- Panel: `#FBFAF7`
-- Surface: `#FFFFFF`
-- Ink: `#1E2422`
-- Muted ink: `#68706C`
-- Moss action: `#42655A`
-- Blue branch: `#5C78A1`
-- Orange branch: `#B86C3D`
-- Amber attention: `#AD7628`
+Projects may hold a bounded read-only repository snapshot containing project structure, selected documentation excerpts, Git status, and recent commits. This grounds reasoning and branch analysis without exposing secret-like files. Focused coding agents operate separately in detached Git worktrees, with their event stream and resulting diff attached to the corresponding Threadline branch.
 
-Color is never the only status signal. Every status also has text, an icon, or a shape.
+Threadline exposes shared working state, not hidden chain-of-thought: intent, assumptions, context, actions, evidence, decisions, uncertainty, and concise rationale.
 
-## Geometry
+## Interaction hierarchy
 
-- Cards and controls use 3–10px radii.
-- Borders provide most grouping; shadows are reserved for floating overlays.
-- The primary shell is a four-region CSS grid with a fixed operations tray.
-- Artifact text columns remain narrow enough for scanning.
+The default interface contains only:
 
-## Interaction
+1. A compact project Focus.
+2. Project intent.
+3. Human Attention: only completed reviews, blockers, and decisions.
+4. The branch tree.
+5. The selected branch's current output, agent state, and next action.
+6. A compact current-understanding inspector on wide screens.
 
-- All native controls have visible focus rings.
-- Hover improves affordance but is never required for discovery.
-- Motion is short and functional, with a reduced-motion override.
-- Material actions surface a preview and produce a reversible checkpoint.
+Context, recovery, and activity are grouped behind Advanced. Review controls appear only when a branch or reasoning item needs review. Threadline uses a graph-shaped model where it helps, but the base interface deliberately avoids a dense canvas.
+
+## Autonomy boundary
+
+- Shared repository information is available to agents.
+- Private and restricted context is excluded from agent packages.
+- Reversible local actions may proceed autonomously.
+- Agent writes are restricted to a dedicated worktree created from committed `HEAD`.
+- Runs are explicitly started and may be paused, resumed, or cancelled.
+- Agent events and diff evidence persist after the process finishes.
+- Threadline never applies worktree changes to the active checkout automatically.
+- External, private, or irreversible actions require explicit approval.
+- Material merges create a recovery checkpoint before changing the main branch.
+
+## Visual system
+
+- Warm neutral canvas and white work surface.
+- Dark moss for durable actions and safe state.
+- Blue for active work and amber for review attention.
+- UI text uses the system sans-serif stack.
+- Intent, outputs, and major headings use a system serif stack.
+- Borders and spacing create hierarchy; shadows are limited to modal surfaces.
+- Status always includes text and shape, never color alone.
+- Motion is optional and disabled when reduced motion is requested.
+
+## Success measures
+
+- A developer can resume a project in under one minute without restating context.
+- Branch-only context never contaminates sibling work.
+- Users can identify what changed and why without reading a transcript.
+- Users can merge only accepted changes and recover the prior state.
+- The workflow reduces re-explanation, navigation time, and avoidable rework on multi-day coding tasks.
