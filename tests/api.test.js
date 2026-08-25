@@ -39,7 +39,7 @@ test('reports local SQLite health', async (t) => {
   const { request } = await setup(t);
   const { response, payload } = await request('/api/health');
   assert.equal(response.status, 200);
-  assert.deepEqual(payload, { ok: true, persistence: 'sqlite' });
+  assert.deepEqual(payload, { ok: true, mode: 'local', persistence: 'sqlite', repositoryInput: 'path' });
 });
 
 test('creates and retrieves a project through the API', async (t) => {

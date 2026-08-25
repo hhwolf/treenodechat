@@ -102,6 +102,9 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       base_commit TEXT,
       session_id TEXT,
       pid INTEGER,
+      sandbox_name TEXT,
+      command_id TEXT,
+      event_cursor INTEGER NOT NULL DEFAULT 0,
       exit_code INTEGER,
       summary TEXT NOT NULL DEFAULT '',
       files_json TEXT NOT NULL DEFAULT '[]',
@@ -142,6 +145,10 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
   const projectColumns = new Set(db.prepare('PRAGMA table_info(projects)').all().map((column) => column.name));
   if (!projectColumns.has('repo_snapshot_json')) db.exec("ALTER TABLE projects ADD COLUMN repo_snapshot_json TEXT NOT NULL DEFAULT '{}'");
   if (!projectColumns.has('repo_scanned_at')) db.exec('ALTER TABLE projects ADD COLUMN repo_scanned_at TEXT');
+  const runColumns = new Set(db.prepare('PRAGMA table_info(agent_runs)').all().map((column) => column.name));
+  if (!runColumns.has('sandbox_name')) db.exec('ALTER TABLE agent_runs ADD COLUMN sandbox_name TEXT');
+  if (!runColumns.has('command_id')) db.exec('ALTER TABLE agent_runs ADD COLUMN command_id TEXT');
+  if (!runColumns.has('event_cursor')) db.exec('ALTER TABLE agent_runs ADD COLUMN event_cursor INTEGER NOT NULL DEFAULT 0');
 
   const event = (projectId, kind, summary) => {
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?)').run(randomUUID(), projectId, kind, summary, now());
@@ -197,6 +204,9 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     baseCommit: row.base_commit,
     sessionId: row.session_id,
     pid: row.pid,
+    sandboxName: row.sandbox_name,
+    commandId: row.command_id,
+    eventCursor: Number(row.event_cursor || 0),
     exitCode: row.exit_code,
     summary: row.summary,
     files: parse(row.files_json, []),
@@ -303,10 +313,10 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     const timestamp = now();
     db.prepare(`INSERT INTO agent_runs (
       id, project_id, branch_id, adapter, status, task, worktree_path, base_commit,
-      session_id, pid, exit_code, summary, files_json, diff_stat, diff_text,
+      session_id, pid, sandbox_name, command_id, event_cursor, exit_code, summary, files_json, diff_stat, diff_text,
       started_at, ended_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, NULL, NULL, NULL, '', '[]', '', '', NULL, NULL, ?, ?)`)
-      .run(id, projectId, branchId, input.adapter || 'codex', input.task, input.worktreePath || '', input.baseCommit || null, timestamp, timestamp);
+    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, 0, NULL, '', '[]', '', '', NULL, NULL, ?, ?)`)
+      .run(id, projectId, branchId, input.adapter || 'codex', input.task, input.worktreePath || '', input.baseCommit || null, input.sandboxName || null, input.commandId || null, timestamp, timestamp);
     db.prepare("UPDATE branches SET status = 'active', updated_at = ? WHERE id = ?").run(timestamp, branchId);
     touchProject(projectId);
     event(projectId, 'agent', `Queued ${input.adapter || 'Codex'} for a focused run.`);
@@ -326,12 +336,15 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     const status = updates.status ?? current.status;
     const startedAt = updates.startedAt ?? current.started_at ?? (status === 'running' ? timestamp : null);
     const endedAt = updates.endedAt ?? current.ended_at ?? (['completed', 'failed', 'cancelled'].includes(status) ? timestamp : null);
-    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
+    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, sandbox_name = ?, command_id = ?, event_cursor = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
       status,
       updates.worktreePath ?? current.worktree_path,
       updates.baseCommit ?? current.base_commit,
       updates.sessionId ?? current.session_id,
       updates.pid === undefined ? current.pid : updates.pid,
+      updates.sandboxName ?? current.sandbox_name,
+      updates.commandId ?? current.command_id,
+      updates.eventCursor ?? current.event_cursor,
       updates.exitCode === undefined ? current.exit_code : updates.exitCode,
       updates.summary ?? current.summary,
       JSON.stringify(updates.files ?? parse(current.files_json, [])),
@@ -742,6 +755,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
   if (seed) seedDemo();
 
   return {
+    mode: 'local',
     db,
     close: () => db.close(),
     listProjects,

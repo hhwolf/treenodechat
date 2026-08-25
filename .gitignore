@@ -2,3 +2,5 @@ node_modules/
 .threadline/
 dist/
 .DS_Store
+.gstack/
+.vercel/
