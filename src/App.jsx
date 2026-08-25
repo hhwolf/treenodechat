@@ -1,69 +1,97 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, getAccessToken, setAccessToken } from './api.js';
 
-const ONBOARDING_STORAGE_KEY = 'threadline:onboarding-complete:v4';
+const ONBOARDING_STORAGE_KEY = 'threadline:onboarding-complete:v5';
 
 const onboardingSteps = [
   {
-    eyebrow: 'Welcome to Threadline',
-    title: 'See the project, not the transcript',
-    description: 'In two minutes, you’ll see how Threadline turns a complex coding goal into visible approaches, evidence, questions, and focused branches.'
+    target: 'project-switcher',
+    eyebrow: 'Your workspace · Project',
+    title: 'One durable home for the whole project',
+    description: 'Threadline keeps the objective, repository, decisions, branches, and agent work together so nobody has to reconstruct the project from chat history.',
+    detail: 'The project switcher tells you which shared understanding you are changing. Reference projects and examples stay available without mixing into your own work.',
+    action: 'Next, define what success means.'
+  },
+  {
+    target: 'intent',
+    view: 'intent',
+    eyebrow: 'One · Set intent',
+    title: 'Turn a rough goal into a working contract',
+    description: 'Intent records the objective, audience, expected outcome, constraints, quality bar, and unresolved questions that should guide every branch.',
+    detail: 'Edit this when the project changes direction. Confirmed intent becomes shared context; it is more durable than another prompt.',
+    action: 'Open Intent whenever “done” becomes unclear.'
   },
   {
     target: 'focus',
     view: 'focus',
-    eyebrow: 'One · Understand',
+    eyebrow: 'Two · Understand',
     title: 'Start with the decision in front of you',
-    description: 'Focus shows only the current goal, plausible approaches, useful evidence, and the question that most needs an answer.'
+    description: 'Focus reduces the full project to the current goal, plausible approaches, useful evidence, and the question that most needs an answer.',
+    detail: 'This is the daily starting point. It compresses the project without discarding the sources and branches behind the summary.',
+    action: 'Draft focus when you need a fresh map of the problem.'
   },
   {
     target: 'repository',
     view: 'focus',
-    eyebrow: 'Two · Ground',
+    eyebrow: 'Three · Ground',
     title: 'Connect reasoning to the real repository',
-    description: 'Connect a GitHub repository. Threadline builds a bounded, secret-filtered snapshot so reasoning can cite the real project.'
+    description: 'Threadline builds a bounded, secret-filtered repository snapshot so reasoning can cite real files, structure, and recent changes.',
+    detail: 'Repository scans are read-only. Secret-like files are excluded, and agents receive only context you have made shareable.',
+    action: 'Refresh the scan after meaningful repository changes.'
   },
   {
     target: 'reasoning-items',
     view: 'focus',
-    eyebrow: 'Three · Review',
+    eyebrow: 'Four · Review',
     title: 'AI structure stays provisional',
-    description: 'Suggested approaches and interpretations are clearly marked. Confirm what matches your understanding or dismiss what does not.'
+    description: 'Suggested approaches, evidence, and assumptions remain proposals until you confirm what matches your understanding or dismiss what does not.',
+    detail: 'Threadline stores conclusions and provenance, not hidden chain-of-thought. Your confirmation is what promotes a suggestion into shared understanding.',
+    action: 'Confirm only claims you want future branches to inherit.'
   },
   {
     target: 'challenge',
     view: 'focus',
-    eyebrow: 'Four · Challenge',
+    eyebrow: 'Five · Challenge',
     title: 'Look for what could prove you wrong',
-    description: 'Challenge adds a counterpoint or missing case so the workspace supports reasoning, not just confident-looking summaries.'
+    description: 'Challenge adds a counterpoint or missing case so the workspace supports reasoning instead of producing only confident-looking summaries.',
+    detail: 'Use it before committing to an expensive path, or whenever every proposed approach looks suspiciously similar.',
+    action: 'Resolve the counterpoint before choosing a branch.'
   },
   {
     target: 'branches',
     view: 'branch',
-    eyebrow: 'Five · Explore',
+    eyebrow: 'Six · Explore',
     title: 'Turn an approach into isolated work',
-    description: 'Fork promising approaches without contaminating sibling context, then compare and selectively merge what survives review.'
+    description: 'Fork promising approaches without contaminating sibling context, then compare and selectively merge only what survives review.',
+    detail: 'A branch is an execution lane with inherited project context plus its own purpose and constraints. Sibling experiments stay separate.',
+    action: 'Fork when two approaches deserve independent evidence.'
   },
   {
     target: 'agent-runs',
     view: 'branch',
-    eyebrow: 'Six · Execute',
+    eyebrow: 'Seven · Execute',
     title: 'Supervise real agent work',
-    description: 'Start Codex in an isolated Vercel Sandbox, watch evidence arrive, pause or cancel safely, and send only decisions that need you to Attention.'
+    description: 'Start Codex in isolation, watch evidence arrive, pause or cancel safely, and send only decisions that need you to Attention.',
+    detail: 'Hosted runs use Vercel Sandboxes; local runs use detached Git worktrees. Changes stay review-only until a human chooses what crosses over.',
+    action: 'Give each run one concrete, verifiable objective.'
   },
   {
     target: 'inspector',
     view: 'focus',
-    eyebrow: 'Seven · Verify',
+    eyebrow: 'Eight · Verify',
     title: 'Trace conclusions back to their source',
-    description: 'Select any reasoning item to inspect its status, confidence, and provenance—without exposing private chain-of-thought.'
+    description: 'Select any reasoning item to inspect its status, confidence, and provenance without exposing private chain-of-thought.',
+    detail: 'The inspector also shows exactly which inherited context a selected branch can use and keeps the autonomy boundary visible.',
+    action: 'Inspect before trusting or sharing a conclusion.'
   },
   {
     target: 'advanced',
     expandAdvanced: true,
-    eyebrow: 'Eight · Go deeper',
+    eyebrow: 'Nine · Recover',
     title: 'Detail is available when you need it',
-    description: 'Advanced opens the context registry, recovery points, and activity trail. They stay out of the way until the project needs closer inspection.'
+    description: 'Advanced opens the context registry, recovery points, and activity trail. They stay out of the way until the project needs closer inspection.',
+    detail: 'Context controls what agents can receive. Recovery checkpoints make material merges reversible. Activity records decisions without recreating a transcript.',
+    action: 'You are ready to work from Focus.'
   }
 ];
 
@@ -95,6 +123,84 @@ function Button({ children, variant = 'secondary', icon, ...props }) {
   return <button className={`button ${variant}`} {...props}>{icon && <Icon name={icon} />}{children}</button>;
 }
 
+function OnboardingStart({ projects, repositoryInput = 'path', onCreate, onUseExample, onSkip }) {
+  const [screen, setScreen] = useState('welcome');
+  const [formStep, setFormStep] = useState(0);
+  const [form, setForm] = useState({ name: '', repoPath: '', brief: '' });
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState('');
+  const example = projects.find((item) => item.name === 'Threadline V2');
+  const existingProject = example || projects[0];
+  const steps = ['Name the work', 'Connect the code', 'Define success'];
+  const canContinue = formStep === 0 ? form.name.trim() : formStep === 1 || form.brief.trim();
+
+  const submit = async (event) => {
+    event.preventDefault();
+    if (formStep < steps.length - 1) {
+      setFormStep((current) => current + 1);
+      return;
+    }
+    setCreating(true);
+    setError('');
+    try { await onCreate(form); }
+    catch (caught) { setError(caught.message); setCreating(false); }
+  };
+
+  return <div className="onboarding-start">
+    <header className="onboarding-topbar">
+      <div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div>
+      <button className="tour-skip" onClick={onSkip}>Skip onboarding</button>
+    </header>
+
+    {screen === 'welcome' ? <main className="onboarding-welcome">
+      <span className="eyebrow">A workspace for long-running projects</span>
+      <h1>Keep the project’s understanding<br />as organized as its code.</h1>
+      <p>Threadline turns a large coding goal into durable intent, grounded reasoning, isolated branches, and reviewable agent work. Start with your project so every step teaches the real workflow.</p>
+      <div className="onboarding-model" aria-label="How Threadline works">
+        <div><span>01</span><strong>Understand</strong><p>Define success and make the important questions visible.</p></div>
+        <div><span>02</span><strong>Explore</strong><p>Give competing approaches separate context and execution lanes.</p></div>
+        <div><span>03</span><strong>Verify</strong><p>Review evidence, merge selectively, and preserve recovery paths.</p></div>
+      </div>
+      <div className="onboarding-actions">
+        <Button variant="primary" icon="plus" onClick={() => setScreen('create')}>Create my project</Button>
+        {existingProject && <button className="text-button" onClick={() => onUseExample(existingProject.id)}>{example ? 'Explore the example instead' : `Open ${existingProject.name} instead`}</button>}
+      </div>
+      <small className="onboarding-note"><Icon name="shield" />Your repository is scanned read-only. Private and restricted context is never sent to agents.</small>
+    </main> : <main className="project-onboarding">
+      <div className="project-onboarding-intro">
+        <button className="text-button back-link" onClick={() => formStep ? setFormStep((current) => current - 1) : setScreen('welcome')}>← Back</button>
+        <span className="eyebrow">Create your first project</span>
+        <h1>{steps[formStep]}</h1>
+        <p>{formStep === 0 && 'Use a clear name for the body of work—not the chat or agent doing it.'}{formStep === 1 && 'Ground the workspace in a repository now, or connect one later from Focus.'}{formStep === 2 && 'Describe the result you want and the behavior or constraint that matters most.'}</p>
+        <ol className="onboarding-step-list">
+          {steps.map((label, index) => <li key={label} className={index === formStep ? 'active' : index < formStep ? 'complete' : ''}><span>{index < formStep ? '✓' : index + 1}</span>{label}</li>)}
+        </ol>
+      </div>
+      <form className="project-onboarding-form" onSubmit={submit}>
+        <div className="project-form-step">
+          <span className="step-kicker">Step {formStep + 1} of {steps.length}</span>
+          {formStep === 0 && <Field label="Project name" hint="You can change the project intent later." value={form.name} required autoFocus onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Payments migration" />}
+          {formStep === 1 && <Field
+            label={repositoryInput === 'url' ? 'GitHub repository URL' : 'Repository path'}
+            hint={repositoryInput === 'url' ? 'Optional. Public repositories work directly; private repositories use your server’s read-only GitHub token.' : 'Optional. Threadline reads a secret-filtered snapshot and keeps agent edits in isolated worktrees.'}
+            value={form.repoPath}
+            autoFocus
+            onChange={(event) => setForm({ ...form, repoPath: event.target.value })}
+            placeholder={repositoryInput === 'url' ? 'https://github.com/owner/repository' : '/Users/you/code/product'}
+          />}
+          {formStep === 2 && <Field as="textarea" label="What are you trying to accomplish?" hint="Include one outcome or constraint that would tell a future collaborator what good looks like." value={form.brief} required autoFocus onChange={(event) => setForm({ ...form, brief: event.target.value })} placeholder="Replace the legacy billing flow while preserving invoice behavior and a safe rollback path…" />}
+          {formStep === 1 && <p className="form-assurance"><Icon name="shield" /><span>No repository? Continue without one and connect it later.</span></p>}
+          {error && <p className="form-error" role="alert">{error}</p>}
+        </div>
+        <footer>
+          <span>{formStep === 2 ? 'Threadline will turn this into editable structured intent.' : 'Nothing is sent to an agent during setup.'}</span>
+          <Button type="submit" variant="primary" disabled={!canContinue || creating}>{creating ? 'Creating workspace…' : formStep === 2 ? 'Create project and continue' : 'Continue'}</Button>
+        </footer>
+      </form>
+    </main>}
+  </div>;
+}
+
 function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }) {
   const step = onboardingSteps[stepIndex];
   const [targetRect, setTargetRect] = useState(null);
@@ -104,7 +210,7 @@ function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }
     let frame;
     const measure = () => {
       frame = window.requestAnimationFrame(() => {
-        const target = step.target ? document.querySelector(`[data-tour="${step.target}"]`) : null;
+        const target = step.target && window.innerWidth >= 760 ? document.querySelector(`[data-tour="${step.target}"]`) : null;
         if (!target) { setTargetRect(null); return; }
         const rect = target.getBoundingClientRect();
         setTargetRect(rect.width && rect.height ? {
@@ -151,7 +257,7 @@ function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }
     const margin = 16;
     const gap = 18;
     const cardWidth = Math.min(370, window.innerWidth - margin * 2);
-    const cardHeight = Math.min(330, window.innerHeight - margin * 2);
+    const cardHeight = Math.min(430, window.innerHeight - margin * 2);
     const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
     if (targetRect.right + gap + cardWidth <= window.innerWidth - margin) {
       return { left: targetRect.right + gap, top: clamp(targetRect.top, margin, window.innerHeight - cardHeight - margin) };
@@ -183,6 +289,8 @@ function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }
         <span className="eyebrow">{step.eyebrow}</span>
         <h2 id="tour-title">{step.title}</h2>
         <p id="tour-description">{step.description}</p>
+        <div className="tour-lesson"><strong>Why this matters</strong><p>{step.detail}</p></div>
+        <p className="tour-action"><Icon name="chevron" />{step.action}</p>
       </div>
       <div className="tour-progress" aria-label={`Step ${stepIndex + 1} of ${onboardingSteps.length}`}>
         {onboardingSteps.map((item, index) => <span key={item.title} className={index <= stepIndex ? 'complete' : ''}></span>)}
@@ -566,6 +674,7 @@ export function App() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState('');
   const [loading, setLoading] = useState(true);
+  const [onboardingEntryOpen, setOnboardingEntryOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
   const [tourStep, setTourStep] = useState(0);
   const [inspectedReasoningId, setInspectedReasoningId] = useState(null);
@@ -596,6 +705,8 @@ export function App() {
       const result = await api.listAdapters();
       setAdapter(result.adapters[0] || null);
       setNeedsAccess(false);
+      try { setOnboardingEntryOpen(!window.localStorage.getItem(ONBOARDING_STORAGE_KEY)); }
+      catch { setOnboardingEntryOpen(true); }
     } catch (error) {
       if (error.status === 401) {
         setAccessToken('');
@@ -634,15 +745,6 @@ export function App() {
   }, [project?.id, project?.agentRuns?.map((run) => `${run.id}:${run.status}`).join('|')]);
 
   useEffect(() => {
-    if (!project) return;
-    try {
-      if (!window.localStorage.getItem(ONBOARDING_STORAGE_KEY)) setTourOpen(true);
-    } catch {
-      setTourOpen(true);
-    }
-  }, [project?.id]);
-
-  useEffect(() => {
     if (!tourOpen || !project) return;
     const step = onboardingSteps[tourStep];
     if (step.view === 'focus') setSelection({ type: 'focus', id: null });
@@ -656,6 +758,7 @@ export function App() {
 
   const closeTour = () => {
     try { window.localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true'); } catch { /* Local storage can be unavailable in privacy mode. */ }
+    setOnboardingEntryOpen(false);
     setTourOpen(false);
   };
 
@@ -685,6 +788,25 @@ export function App() {
     setSelection({ type: 'focus', id: null });
     await refreshProjects(result.project.id);
     notify('Project created with a structured intent');
+    return result.project;
+  };
+
+  const createOnboardingProject = async (form) => {
+    await createProject(form);
+    setOnboardingEntryOpen(false);
+    setTourStep(0);
+    setTourOpen(true);
+  };
+
+  const useExampleForOnboarding = async (projectId) => {
+    if (project?.id !== projectId) {
+      const result = await api.getProject(projectId);
+      setProject(result.project);
+    }
+    setSelection({ type: 'focus', id: null });
+    setOnboardingEntryOpen(false);
+    setTourStep(0);
+    setTourOpen(true);
   };
 
   const createBranch = async (form) => {
@@ -709,6 +831,7 @@ export function App() {
 
   if (loading) return <div className="loading-screen"><div className="brand-mark"><span></span><span></span><span></span></div><p>Loading shared understanding…</p></div>;
   if (health?.mode === 'cloud' && (!health.configured || needsAccess)) return <HostedGate configured={health.configured} onUnlock={unlockHostedWorkspace} />;
+  if (onboardingEntryOpen) return <OnboardingStart projects={projects} repositoryInput={health?.repositoryInput} onCreate={createOnboardingProject} onUseExample={useExampleForOnboarding} onSkip={closeTour} />;
   if (!project) return <div className="onboarding"><div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div><h1>Keep humans and coding agents<br />on the same page.</h1><p>Open a repository, define what good looks like, and carry that understanding through every branch and change.</p><Button variant="primary" onClick={() => setModal('project')}>Start a project</Button>{modal === 'project' && <NewProjectModal repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onCreate={createProject} />}</div>;
 
   return <div className="app-shell">

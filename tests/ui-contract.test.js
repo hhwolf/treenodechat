@@ -36,10 +36,19 @@ test('ships accessible focus and reduced-motion behavior', () => {
 });
 
 test('guides first-time users through the real workspace without trapping them', () => {
-  assert.match(app, /threadline:onboarding-complete:v4/);
+  assert.match(app, /threadline:onboarding-complete:v5/);
   assert.match(app, /Skip onboarding/);
   assert.match(app, /Explore Threadline/);
+  assert.match(app, /Create my project/);
+  assert.match(app, /Explore the example instead/);
+  assert.match(app, /Create project and continue/);
+  assert.match(app, /onCreate={createOnboardingProject}/);
+  assert.match(app, /setTourOpen\(true\)/);
+  for (const phrase of ['Name the work', 'Connect the code', 'Define success', 'Why this matters']) {
+    assert.match(app, new RegExp(phrase));
+  }
   assert.match(app, /data-tour="intent"/);
+  assert.match(app, /data-tour="project-switcher"/);
   assert.match(app, /data-tour="branches"/);
   assert.match(app, /data-tour="workspace"/);
   assert.match(app, /data-tour="focus"/);
@@ -47,6 +56,8 @@ test('guides first-time users through the real workspace without trapping them',
   assert.match(app, /data-tour="challenge"/);
   assert.match(app, /aria-label={`Step \$\{stepIndex \+ 1\} of \$\{onboardingSteps\.length\}`}/);
   assert.match(styles, /tour-spotlight/);
+  assert.match(styles, /onboarding-model/);
+  assert.match(styles, /project-onboarding-form/);
 });
 
 test('keeps reasoning support compact, reviewable, and source-backed', () => {
