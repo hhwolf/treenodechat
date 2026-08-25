@@ -57,6 +57,36 @@ test('creates and retrieves a project through the API', async (t) => {
   assert.ok(loaded.payload.project.repository.fileCount > 0);
 });
 
+test('validates, connects, and replaces a project repository', async (t) => {
+  const { request } = await setup(t);
+  const invalid = await request('/api/repositories/inspect', {
+    method: 'POST',
+    body: JSON.stringify({ location: '/definitely-missing-threadline-repository' })
+  });
+  assert.equal(invalid.response.status, 422);
+  assert.equal(invalid.payload.error, 'Repository path does not exist');
+
+  const inspected = await request('/api/repositories/inspect', {
+    method: 'POST',
+    body: JSON.stringify({ location: process.cwd() })
+  });
+  assert.equal(inspected.response.status, 200);
+  assert.ok(inspected.payload.repository.files.includes('package.json'));
+
+  const created = await request('/api/projects', {
+    method: 'POST',
+    body: JSON.stringify({ name: 'Reconnectable', brief: 'Connect the correct repository later' })
+  });
+  const connected = await request(`/api/projects/${created.payload.project.id}/repository`, {
+    method: 'PATCH',
+    body: JSON.stringify({ location: process.cwd() })
+  });
+  assert.equal(connected.response.status, 200);
+  assert.equal(connected.payload.project.repoPath, process.cwd());
+  assert.ok(connected.payload.project.repository.fileCount > 0);
+  assert.ok(connected.payload.project.events.some((event) => event.kind === 'repository'));
+});
+
 test('drafts clarifying questions without a configured model provider', async (t) => {
   const { store, request } = await setup(t);
   const project = store.createProject({ name: 'Draft', brief: 'Refactor the parser' });

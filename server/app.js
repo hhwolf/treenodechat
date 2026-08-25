@@ -54,6 +54,14 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         return true;
       }
 
+      if (url.pathname === '/api/repositories/inspect' && request.method === 'POST') {
+        const body = await readBody(request);
+        const location = String(body.location || body.repoUrl || body.repoPath || '').trim();
+        if (!location) throw new Error('Choose a repository location first');
+        json(response, 200, { repository: await repositoryInspector(location) });
+        return true;
+      }
+
       if (url.pathname === '/api/projects' && request.method === 'GET') {
         json(response, 200, { projects: await store.listProjects() });
         return true;
@@ -120,6 +128,22 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         }
         await readBody(request);
         const repository = await repositoryInspector(project.repoPath);
+        const updated = await store.updateRepositorySnapshot(project.id, repository);
+        json(response, 200, { project: updated });
+        return true;
+      }
+
+      const repositoryConnectMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/repository$/);
+      if (repositoryConnectMatch && request.method === 'PATCH') {
+        const project = await store.getProject(repositoryConnectMatch[1]);
+        if (!project) {
+          json(response, 404, { error: 'Project not found' });
+          return true;
+        }
+        const body = await readBody(request);
+        const location = String(body.location || body.repoUrl || body.repoPath || '').trim();
+        if (!location) throw new Error('Choose a repository location first');
+        const repository = await repositoryInspector(location);
         const updated = await store.updateRepositorySnapshot(project.id, repository);
         json(response, 200, { project: updated });
         return true;
