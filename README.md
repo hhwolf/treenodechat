@@ -1,101 +1,124 @@
 # Threadline
 
-Threadline keeps professional developers and coding agents synchronized on large, long-running projects. Instead of treating conversation history as the project, it persists the project's intent, scoped context, parallel branches, proposed changes, decisions, and recovery points.
+Threadline keeps developers and coding agents synchronized on large, long-running projects. Instead of treating chat history as the project, it persists intent, scoped context, parallel branches, proposed decisions, agent evidence, attention items, and recovery points.
 
-This V3 is a working local-first application, not a static mock. It includes a React interface, a Node API, and SQLite persistence.
+It supports two deliberately compatible runtimes:
+
+| | Hosted on Vercel | Local development |
+|---|---|---|
+| Repository | GitHub URL | Absolute local path |
+| Persistence | Managed Postgres | SQLite |
+| Agent isolation | Persistent Vercel Sandbox | Detached Git worktree |
+| Access | Shared secret gate | Localhost only |
 
 ## What works
 
 - Create and switch between persistent projects.
-- Turn a rough objective into a structured intent specification.
-- Draft a compact reasoning focus with approaches, evidence, assumptions, open questions, and counterpoints.
-- Scan a bounded, secret-filtered, read-only repository snapshot for grounded evidence.
-- Keep model interpretations provisional until a user confirms or dismisses them.
-- Inspect provenance and turn an unassigned approach into an isolated branch.
-- Analyze a branch into reviewable findings using the configured model or a local fallback.
-- Record who the work is for, what to avoid, the required format, and what good looks like.
-- Fork branches with inherited and branch-only context.
-- Keep private and restricted context out of agent context packages.
-- Track branch state and review proposed changes.
-- Start Codex on a focused branch in an isolated Git worktree.
-- Follow a durable agent event stream and pause, resume, or cancel active runs.
-- Review changed files, diff statistics, full patches, test output, and blockers without opening a transcript.
+- Turn a rough objective into a structured, editable intent.
+- Ground reasoning in a bounded, secret-filtered repository snapshot.
+- Keep model interpretations provisional until a human confirms or dismisses them.
+- Fork parallel branches with inherited and branch-only context.
+- Keep private and restricted context out of agent prompts.
+- Start, pause, resume, cancel, and inspect focused Codex runs.
+- Review event evidence, changed files, diff statistics, patches, and blockers without reading a full transcript.
 - Route completed reviews and failures into a human Attention inbox.
-- Partially accept and merge changes into the main branch.
-- Create an automatic rollback checkpoint before every merge.
-- Restore earlier project state without deleting the recovery point.
+- Selectively merge accepted Threadline findings with automatic recovery checkpoints.
 - Reveal context, recovery, and activity only when Advanced is opened.
+
+## Deploy on Vercel
+
+The repository is ready for Vercel Functions, managed Postgres, and Vercel Sandbox. In the Vercel project:
+
+1. Add a managed Postgres integration from the Vercel Marketplace and expose its connection string as `DATABASE_URL`.
+2. Add `THREADLINE_ACCESS_TOKEN` using a long random value. For example, generate one locally with `openssl rand -base64 32`.
+3. Add `OPENAI_API_KEY` and set `OPENAI_MODEL` to `gpt-5.6-sol`.
+4. Optionally add a fine-grained `GITHUB_TOKEN` with read-only **Contents** and **Metadata** access for private repositories. Public repositories need no token.
+5. Apply the variables to Production and Preview, then redeploy.
+
+Use [.env.example](.env.example) as the configuration checklist. Never commit real credentials.
+
+On first load, Threadline reports incomplete hosted configuration before touching the database. Once configured, enter the `THREADLINE_ACCESS_TOKEN` value in the browser. The access code is retained only in that browser tab.
+
+### Hosted agent boundary
+
+Each run starts from the project GitHub repository in its own persistent Vercel Sandbox. Setup can reach GitHub and npm; before Codex starts, outbound network access is reduced to `api.openai.com`. Only shared Threadline context enters the prompt. The agent cannot push, commit, or change remotes, and Threadline stops the sandbox after collecting its reviewable diff.
 
 ## Run locally
 
-Requirements: Node.js 22.12 or newer. Real agent runs also require an installed and authenticated [Codex CLI](https://learn.chatgpt.com/docs/developer-commands?surface=cli).
+Requirements: Node.js 22.12 or newer. Real agent runs also require an installed and authenticated Codex CLI.
 
 ```bash
 npm install
 npm run dev
 ```
 
-Open [http://localhost:4174](http://localhost:4174). Project state is stored in `.threadline/threadline.db`, which is ignored by Git.
+Open [http://localhost:4174](http://localhost:4174). State is stored in `.threadline/threadline.db`, which is ignored by Git.
 
-### Test the full workflow
-
-1. Select **New project** and enter an absolute path to a local Git repository.
-2. Review the automatically scanned repository summary on **Focus**.
-3. Select **Draft focus**, confirm useful items, and use **Challenge** to add a counterpoint.
-4. Fork an approach or open a branch and select **Run with Codex**.
-5. Confirm the isolated-worktree boundary, start a focused task, and follow its event stream. Try **Pause**, **Resume**, or **Cancel run** while it is active.
-6. Review the resulting diff, then open **Attention** to resolve the review request.
-7. Selectively merge accepted Threadline findings, then try a recovery checkpoint.
-
-To start with an empty workspace:
+Start with an empty workspace:
 
 ```bash
 THREADLINE_EMPTY=1 npm run dev
 ```
 
-To exercise the complete supervision flow without invoking Codex, use the built-in demo adapter. It creates a small artifact in the same kind of isolated worktree:
+Exercise the full supervision flow without invoking Codex:
 
 ```bash
 THREADLINE_AGENT_ADAPTER=demo THREADLINE_EMPTY=1 npm run dev
 ```
 
-By default, Threadline starts `codex exec` with `workspace-write` sandboxing inside a detached worktree created from the repository's committed `HEAD`. Uncommitted changes in the active checkout are not copied. Server credentials such as model-provider, cloud, and GitHub tokens are removed from the agent process environment. Authenticate the Codex CLI with `codex login`; set `CODEX_AGENT_MODEL` only when you need to override its configured model.
+Local mode starts real agents with `workspace-write` sandboxing inside a detached worktree created from committed `HEAD`. Uncommitted changes in the active checkout are not copied. Server credentials are removed from the agent environment.
 
-## Optional model provider
+## Optional model-assisted reasoning
 
-Without configuration, Threadline creates structured specs locally. To use an OpenAI-compatible chat-completions endpoint, set these server-side variables:
+Hosted deployments use the official OpenAI Responses API when `OPENAI_API_KEY` and `OPENAI_MODEL` are present. Local mode also supports it:
 
 ```bash
-LLM_API_URL=https://api.openai.com/v1/chat/completions \
-LLM_API_KEY=your-key \
-LLM_MODEL=gpt-5.6-sol \
+OPENAI_API_KEY=your-key \
+OPENAI_MODEL=gpt-5.6-sol \
 npm run dev
 ```
 
-Model credentials never reach the browser. When a repository has been scanned, the server may send the bounded snapshot and shared context to the configured endpoint. Secret-like files, private context, dependencies, build output, and Threadline state are excluded.
+Without model configuration, Threadline creates specs and reasoning briefs using deterministic local fallbacks. For backward compatibility, an OpenAI-compatible Chat Completions endpoint can still be configured with `LLM_API_URL`, `LLM_API_KEY`, and `LLM_MODEL`.
 
-## Verify
+Model credentials never reach the browser. Repository excerpts and shared context may be sent to the configured model; secret-like files, private context, dependencies, build output, and Threadline state are excluded.
+
+## Test the workflow
+
+1. Create a project from a GitHub URL when hosted, or a repository path locally.
+2. Review the repository grounding on **Focus**.
+3. Draft the reasoning focus, confirm useful items, and add a counterpoint with **Challenge**.
+4. Fork an approach or open a branch, then select **Run with Codex**.
+5. Follow the event stream and try **Pause**, **Resume**, or **Cancel run**.
+6. Inspect the resulting patch and resolve its **Attention** item.
+7. Selectively merge accepted Threadline findings, then restore a recovery checkpoint.
+
+Run the automated checks with:
 
 ```bash
 npm test
+npx vercel build
 ```
 
-The test suite covers project and intent persistence, reasoning review and challenges, branch isolation, context inheritance, private-context exclusion, partial acceptance, automatic checkpoints, rollback, API behavior, and core interface contracts. It also produces a production build.
+The suite covers local and Postgres domain behavior, context privacy, repository filtering, hosted authentication, Vercel routing, Sandbox configuration, supervised agent evidence, API behavior, and core interface contracts.
 
 ## Architecture
 
 ```text
-src/                 React workspace and API client
-server/index.js      Local web server and Vite middleware
-server/app.js        HTTP API routes
-server/store.js      SQLite schema and domain operations
-server/spec.js       Optional model adapter and local spec fallback
-server/agent-runtime.js  Isolated worktrees and the Codex event adapter
-tests/               Store, API, and interface contract tests
+src/                         React workspace and authenticated API client
+api/[...].js                 Vercel Function entry point and hosted access gate
+server/app.js                Runtime-neutral HTTP API routes
+server/store.js              Local SQLite domain store
+server/cloud-store.js        Postgres aggregate store with transactional updates
+server/repository.js         Local secret-filtered repository scanner
+server/github-repository.js  Hosted GitHub API scanner
+server/agent-runtime.js      Local worktree/Codex adapter
+server/sandbox-runtime.js    Persistent Vercel Sandbox/Codex adapter
+server/spec.js               OpenAI Responses adapter and local fallbacks
+tests/                       Domain, API, security, runtime, and UI contracts
 ```
 
-The API supports projects, intent updates, spec and reasoning drafts, reasoning review, branches, scoped context, supervised agent runs, event streams, attention items, checkpoints, restore, and selective merge. The schema remains deliberately local and compact.
+The hosted store keeps each project graph as a versioned JSONB aggregate. Mutations lock one project row inside a transaction, which preserves branch, event, checkpoint, and attention consistency without prematurely introducing a large relational schema.
 
 ## Current boundary
 
-Threadline's repository scanner and branch analyzer remain read-only. A coding agent may edit only its dedicated worktree; Threadline never applies that diff to the active checkout automatically. Applying or committing code remains an explicit human step. Authentication, cloud synchronization, multiplayer collaboration, billing, and autonomous external actions remain out of scope.
+This is a single-workspace product protected by one strong access code, not yet a multi-user account system. Repository scanning and branch analysis are read-only. Agent changes remain isolated and review-only; Threadline never pushes or applies them to a real repository automatically. Billing, team permissions, live collaboration, and autonomous external actions remain out of scope.

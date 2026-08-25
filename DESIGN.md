@@ -12,7 +12,7 @@ A developer opens a repository, or returns days later, and immediately sees the 
 
 Before committing to a branch, Focus shows a small reviewable reasoning brief: plausible approaches, evidence, assumptions, counterpoints, and the next unresolved question. The AI drafts this structure, but interpretive state becomes durable only after human confirmation.
 
-Projects may hold a bounded read-only repository snapshot containing project structure, selected documentation excerpts, Git status, and recent commits. This grounds reasoning and branch analysis without exposing secret-like files. Focused coding agents operate separately in detached Git worktrees, with their event stream and resulting diff attached to the corresponding Threadline branch.
+Projects may hold a bounded read-only repository snapshot containing project structure, selected documentation excerpts, and recent commits. Local mode also includes Git working-tree status. This grounds reasoning and branch analysis without exposing secret-like files. Focused coding agents operate separately in detached local Git worktrees or persistent Vercel Sandboxes, with their event stream and resulting diff attached to the corresponding Threadline branch.
 
 Threadline exposes shared working state, not hidden chain-of-thought: intent, assumptions, context, actions, evidence, decisions, uncertainty, and concise rationale.
 
@@ -34,10 +34,10 @@ Context, recovery, and activity are grouped behind Advanced. Review controls app
 - Shared repository information is available to agents.
 - Private and restricted context is excluded from agent packages.
 - Reversible local actions may proceed autonomously.
-- Agent writes are restricted to a dedicated worktree created from committed `HEAD`.
+- Agent writes are restricted to a dedicated worktree created from committed `HEAD` locally, or a dedicated Vercel Sandbox cloned from the configured GitHub repository when hosted.
 - Runs are explicitly started and may be paused, resumed, or cancelled.
 - Agent events and diff evidence persist after the process finishes.
-- Threadline never applies worktree changes to the active checkout automatically.
+- Threadline never applies isolated agent changes to the active checkout or pushes them to GitHub automatically.
 - External, private, or irreversible actions require explicit approval.
 - Material merges create a recovery checkpoint before changing the main branch.
 

@@ -23,7 +23,7 @@
 
 * { box-sizing: border-box; }
 html, body, #root { min-height: 100%; margin: 0; }
-body { min-width: 1080px; background: var(--canvas); }
+body { background: var(--canvas); }
 button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible { outline: 2px solid #729d8e; outline-offset: 2px; }
@@ -31,6 +31,7 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 
 .app-shell {
+  min-width: 1080px;
   min-height: 100vh;
   display: grid;
   grid-template-columns: 238px minmax(560px, 1fr) 286px;
@@ -346,9 +347,15 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 
 .loading-screen, .onboarding { min-height: 100vh; display: grid; place-items: center; align-content: center; text-align: center; background: var(--canvas); }
 .loading-screen { gap: 10px; color: var(--muted); font-size: 11px; }
+.onboarding { padding: 80px 20px 40px; }
 .onboarding .brand-lockup { position: absolute; left: 25px; top: 22px; }
-.onboarding h1 { font: 600 clamp(36px, 5vw, 64px)/1.02 ui-serif, Georgia, serif; letter-spacing: -.05em; margin: 0; }
+.onboarding h1 { max-width: 100%; font: 600 clamp(36px, 5vw, 64px)/1.02 ui-serif, Georgia, serif; letter-spacing: -.05em; margin: 0; }
 .onboarding > p { color: var(--muted); font: 400 14px/1.6 ui-serif, Georgia, serif; max-width: 560px; margin: 20px 0 28px; }
+.hosted-gate code { padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--ink); font: 500 12px ui-monospace, monospace; }
+.access-form { display: flex; gap: 10px; width: min(430px, calc(100vw - 40px)); }
+.access-form input { flex: 1; min-width: 0; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface); color: var(--ink); padding: 11px 13px; font: inherit; }
+.access-form input:focus { outline: 2px solid rgba(68, 110, 91, .22); border-color: var(--moss); }
+.hosted-gate .form-error { margin-top: 12px; color: var(--danger); }
 
 @media (max-width: 1240px) {
   .app-shell { grid-template-columns: 220px minmax(550px, 1fr) 250px; }
@@ -357,11 +364,17 @@ svg { fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round
 }
 
 @media (max-width: 1080px) {
-  body { min-width: 760px; }
+  .app-shell { min-width: 760px; }
   .app-shell { grid-template-columns: 210px minmax(550px, 1fr); }
   .inspector-shell { display: none; }
   .topbar { grid-template-columns: 190px 230px 1fr auto; }
   .local-state { display: none; }
+}
+
+@media (max-width: 520px) {
+  .onboarding h1 { font-size: 34px; }
+  .onboarding > p { font-size: 13px; }
+  .hosted-gate code { padding: 1px 4px; font-size: 10px; }
 }
 
 @media (max-width: 1180px) {

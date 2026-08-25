@@ -1,14 +1,37 @@
+const ACCESS_TOKEN_KEY = 'threadline:access-token';
+
+export function getAccessToken() {
+  try { return window.sessionStorage.getItem(ACCESS_TOKEN_KEY) || ''; } catch { return ''; }
+}
+
+export function setAccessToken(token) {
+  try {
+    if (token) window.sessionStorage.setItem(ACCESS_TOKEN_KEY, token);
+    else window.sessionStorage.removeItem(ACCESS_TOKEN_KEY);
+  } catch { /* The current tab can still make unauthenticated requests. */ }
+}
+
 async function request(path, options = {}) {
+  const token = options.public ? '' : getAccessToken();
   const response = await fetch(path, {
     ...options,
-    headers: options.body ? { 'content-type': 'application/json', ...options.headers } : options.headers
+    headers: {
+      ...(options.body ? { 'content-type': 'application/json' } : {}),
+      ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...options.headers
+    }
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error || `Request failed (${response.status})`);
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(payload.error || `Request failed (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
   return payload;
 }
 
 export const api = {
+  health: () => request('/api/health', { public: true }),
   listProjects: () => request('/api/projects'),
   listAdapters: () => request('/api/adapters'),
   getProject: (id) => request(`/api/projects/${id}`),

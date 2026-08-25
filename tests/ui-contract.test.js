@@ -36,7 +36,7 @@ test('ships accessible focus and reduced-motion behavior', () => {
 });
 
 test('guides first-time users through the real workspace without trapping them', () => {
-  assert.match(app, /threadline:onboarding-complete:v3/);
+  assert.match(app, /threadline:onboarding-complete:v4/);
   assert.match(app, /Skip onboarding/);
   assert.match(app, /Explore Threadline/);
   assert.match(app, /data-tour="intent"/);
@@ -67,7 +67,7 @@ test('supports a grounded repository-to-branch workflow', () => {
 });
 
 test('exposes supervised agent execution without crowding the base workflow', () => {
-  for (const phrase of ['Run with', 'isolated Git worktree', 'Pause', 'Cancel run', 'Attention', 'Mark resolved', 'Inspect diff']) {
+  for (const phrase of ['Run with', 'isolated Vercel Sandbox', 'Pause', 'Cancel run', 'Attention', 'Mark resolved', 'Inspect diff']) {
     assert.match(app, new RegExp(phrase));
   }
   assert.match(app, /data-tour="agent-runs"/);
