@@ -35,13 +35,13 @@ The repository is ready for Vercel Functions, managed Postgres, and Vercel Sandb
 4. Optionally add a fine-grained `GITHUB_TOKEN` with read-only **Contents** and **Metadata** access for private repositories. Public repositories need no token.
 5. Apply the variables to Production and Preview, then redeploy.
 
-Use [.env.example](.env.example) as the configuration checklist. Never commit real credentials.
+Use [.env.example](.env.example) as the configuration checklist. Agent sandboxes default to a 40-minute timeout; set `THREADLINE_SANDBOX_TIMEOUT` in milliseconds when a different limit is needed. Never commit real credentials.
 
 On first load, Threadline reports incomplete hosted configuration before touching the database. Once configured, enter the `THREADLINE_ACCESS_TOKEN` value in the browser. The access code is retained only in that browser tab.
 
 ### Hosted agent boundary
 
-Each run starts from the project GitHub repository in its own persistent Vercel Sandbox. Setup can reach GitHub and npm; before Codex starts, outbound network access is reduced to `api.openai.com`. Only shared Threadline context enters the prompt. The agent cannot push, commit, or change remotes, and Threadline stops the sandbox after collecting its reviewable diff.
+Each run starts from the project GitHub repository in its own persistent Vercel Sandbox. Setup can reach GitHub and npm; before Codex starts, outbound network access is reduced to `api.openai.com`. Only shared Threadline context enters the prompt. The agent is instructed not to push, commit, or change remotes, and the restricted network prevents GitHub access after setup. Threadline stops the sandbox after collecting its reviewable diff.
 
 ## Run locally
 
@@ -66,7 +66,7 @@ Exercise the full supervision flow without invoking Codex:
 THREADLINE_AGENT_ADAPTER=demo THREADLINE_EMPTY=1 npm run dev
 ```
 
-Local mode starts real agents with `workspace-write` sandboxing inside a detached worktree created from committed `HEAD`. Uncommitted changes in the active checkout are not copied. Server credentials are removed from the agent environment.
+Local mode starts real agents with `workspace-write` sandboxing inside a detached worktree created from committed `HEAD`. Uncommitted changes in the active checkout are not copied. Server credentials are removed from the agent environment. Set `CODEX_AGENT_MODEL` only when you need to override the Codex CLI's configured model.
 
 ## Optional model-assisted reasoning
 
@@ -118,6 +118,8 @@ tests/                       Domain, API, security, runtime, and UI contracts
 ```
 
 The hosted store keeps each project graph as a versioned JSONB aggregate. Mutations lock one project row inside a transaction, which preserves branch, event, checkpoint, and attention consistency without prematurely introducing a large relational schema.
+
+See [DESIGN.md](DESIGN.md) for the product model, autonomy boundary, interaction hierarchy, and success measures behind this architecture.
 
 ## Current boundary
 
