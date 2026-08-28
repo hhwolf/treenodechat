@@ -78,7 +78,7 @@ test('supports a grounded repository-to-branch workflow', () => {
 });
 
 test('exposes supervised agent execution without crowding the base workflow', () => {
-  for (const phrase of ['Run with', 'isolated Vercel Sandbox', 'Pause', 'Cancel run', 'Attention', 'Mark resolved', 'Inspect diff', 'Integrate selected files', 'Hosted runs remain review-only']) {
+  for (const phrase of ['Run with', 'isolated Vercel Sandbox', 'Pause', 'Cancel run', 'Attention', 'Mark resolved', 'Inspect diff', 'Integrate selected files', 'Hosted runs remain review-only', 'Threadline workspace:', 'git merge']) {
     assert.match(app, new RegExp(phrase));
   }
   assert.match(app, /data-tour="agent-runs"/);

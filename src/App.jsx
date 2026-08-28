@@ -630,7 +630,7 @@ function IntentView({ project, onSave, onDraft }) {
 
 const activeRunStatuses = new Set(['queued', 'running', 'paused']);
 
-function AgentRunPanel({ run, adapter, onStart, onControl, onIntegrate }) {
+function AgentRunPanel({ run, adapter, projectIntegration, onStart, onControl, onIntegrate }) {
   const [expandedDiff, setExpandedDiff] = useState(false);
   if (!run) return <section className="agent-panel agent-empty" data-tour="agent-runs">
     <div className="agent-empty-copy"><span className="agent-mark"><Icon name="terminal" /></span><div><span className="eyebrow">Agent execution</span><h2>Turn this branch into supervised work</h2><p>Codex works in an isolated Git worktree while Threadline keeps progress, evidence, and control visible.</p></div></div>
@@ -664,7 +664,12 @@ function AgentRunPanel({ run, adapter, onStart, onControl, onIntegrate }) {
       </aside>
     </div>
     {run.summary && <p className="run-summary">{run.summary}</p>}
-    {run.integration?.commit && <div className="integration-result"><Icon name="check" /><div><strong>Integrated into {run.integration.branchName}</strong><p>{run.integration.files.length} file{run.integration.files.length === 1 ? '' : 's'} committed at <code>{run.integration.commit.slice(0, 8)}</code>.</p></div></div>}
+    {run.integration?.commit && <div className="integration-result"><Icon name="check" /><div>
+      <strong>Integrated into {run.integration.branchName}</strong>
+      <p>{run.integration.files.length} file{run.integration.files.length === 1 ? '' : 's'} committed at <code>{run.integration.commit}</code>.</p>
+      {projectIntegration?.workspacePath && <p>Threadline workspace: <code>{projectIntegration.workspacePath}</code></p>}
+      <p>When final review is complete, run <code>git merge {run.integration.branchName}</code> from your normal checkout.</p>
+    </div></div>}
     {!canCancel && run.status === 'completed' && run.files?.length > 0 && !adapter?.supportsIntegration && <p className="hosted-review-note"><Icon name="shield" />Hosted runs remain review-only. Local Threadline can integrate accepted files into a project branch.</p>}
     {expandedDiff && run.diff && <pre className="diff-preview">{run.diff}</pre>}
     {run.worktreePath && <p className="worktree-path"><Icon name="shield" />Isolated at <code>{run.worktreePath}</code></p>}
@@ -683,7 +688,7 @@ function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork
       <section className="output-card"><header><div><span className={`status-pill ${branch.status}`}>{branch.status}</span><h2>Current output</h2></div><span className="updated">Updated {new Date(branch.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></header><p>{branch.output.summary || 'This branch has not produced an output yet.'}</p></section>
       <section className="understanding-card"><span className="eyebrow">Shared understanding</span><strong>{contexts.length} context items available</strong><p>{contexts.some((item) => item.sensitivity !== 'shared') ? 'Private context is excluded from agents.' : 'Every listed item is available to this branch.'}</p></section>
     </div>
-    <AgentRunPanel run={latestRun} adapter={adapter} onStart={onStartAgent} onControl={onControlAgent} onIntegrate={onIntegrate} />
+    <AgentRunPanel run={latestRun} adapter={adapter} projectIntegration={project.integration} onStart={onStartAgent} onControl={onControlAgent} onIntegrate={onIntegrate} />
     <section className="changes-section"><header><div><span className="eyebrow">Reviewable findings</span><h2>Proposed findings</h2></div>{branch.parentId && changes.length > 0 && branch.status !== 'merged' && <Button icon="compare" onClick={onMerge}>Compare findings</Button>}</header>
       {changes.length ? <div className="proposed-changes">{changes.map((change) => <div className="proposed-change" key={change.id}><span className="change-mark"><Icon name="check" /></span><div><strong>{change.title}</strong><p>{change.detail}</p>{change.mergedFrom && <small>Merged from another branch</small>}</div></div>)}</div> : <div className="empty-state"><div className="empty-graphic"><Icon name="branch" size={24} /></div><strong>No proposed changes yet</strong><p>Start the branch after its purpose and inherited context look right.</p></div>}
     </section>
