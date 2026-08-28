@@ -2,3 +2,8 @@ node_modules/
 .threadline/
 dist/
 .DS_Store
+.gstack/
+.vercel/
+.env
+.env.*
+!.env.example

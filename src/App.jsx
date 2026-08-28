@@ -1,69 +1,97 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api } from './api.js';
+import { api, getAccessToken, setAccessToken } from './api.js';
 
-const ONBOARDING_STORAGE_KEY = 'threadline:onboarding-complete:v3';
+const ONBOARDING_STORAGE_KEY = 'threadline:onboarding-complete:v5';
 
 const onboardingSteps = [
   {
-    eyebrow: 'Welcome to Threadline',
-    title: 'See the project, not the transcript',
-    description: 'In two minutes, you’ll see how Threadline turns a complex coding goal into visible approaches, evidence, questions, and focused branches.'
+    target: 'project-switcher',
+    eyebrow: 'Your workspace · Project',
+    title: 'One durable home for the whole project',
+    description: 'Threadline keeps the objective, repository, decisions, branches, and agent work together so nobody has to reconstruct the project from chat history.',
+    detail: 'The project switcher tells you which shared understanding you are changing. Reference projects and examples stay available without mixing into your own work.',
+    action: 'Next, define what success means.'
+  },
+  {
+    target: 'intent',
+    view: 'intent',
+    eyebrow: 'One · Set intent',
+    title: 'Turn a rough goal into a working contract',
+    description: 'Intent records the objective, audience, expected outcome, constraints, quality bar, and unresolved questions that should guide every branch.',
+    detail: 'Edit this when the project changes direction. Confirmed intent becomes shared context; it is more durable than another prompt.',
+    action: 'Open Intent whenever “done” becomes unclear.'
   },
   {
     target: 'focus',
     view: 'focus',
-    eyebrow: 'One · Understand',
+    eyebrow: 'Two · Understand',
     title: 'Start with the decision in front of you',
-    description: 'Focus shows only the current goal, plausible approaches, useful evidence, and the question that most needs an answer.'
+    description: 'Focus reduces the full project to the current goal, plausible approaches, useful evidence, and the question that most needs an answer.',
+    detail: 'This is the daily starting point. It compresses the project without discarding the sources and branches behind the summary.',
+    action: 'Draft focus when you need a fresh map of the problem.'
   },
   {
     target: 'repository',
     view: 'focus',
-    eyebrow: 'Two · Ground',
+    eyebrow: 'Three · Ground',
     title: 'Connect reasoning to the real repository',
-    description: 'Scan a limited read-only snapshot so approaches and branch analysis can cite project structure without exposing secrets or editing files.'
+    description: 'Threadline builds a bounded, secret-filtered repository snapshot so reasoning can cite real files, structure, and recent changes.',
+    detail: 'Repository scans are read-only. Secret-like files are excluded, and agents receive only context you have made shareable.',
+    action: 'Refresh the scan after meaningful repository changes.'
   },
   {
     target: 'reasoning-items',
     view: 'focus',
-    eyebrow: 'Three · Review',
+    eyebrow: 'Four · Review',
     title: 'AI structure stays provisional',
-    description: 'Suggested approaches and interpretations are clearly marked. Confirm what matches your understanding or dismiss what does not.'
+    description: 'Suggested approaches, evidence, and assumptions remain proposals until you confirm what matches your understanding or dismiss what does not.',
+    detail: 'Threadline stores conclusions and provenance, not hidden chain-of-thought. Your confirmation is what promotes a suggestion into shared understanding.',
+    action: 'Confirm only claims you want future branches to inherit.'
   },
   {
     target: 'challenge',
     view: 'focus',
-    eyebrow: 'Four · Challenge',
+    eyebrow: 'Five · Challenge',
     title: 'Look for what could prove you wrong',
-    description: 'Challenge adds a counterpoint or missing case so the workspace supports reasoning, not just confident-looking summaries.'
+    description: 'Challenge adds a counterpoint or missing case so the workspace supports reasoning instead of producing only confident-looking summaries.',
+    detail: 'Use it before committing to an expensive path, or whenever every proposed approach looks suspiciously similar.',
+    action: 'Resolve the counterpoint before choosing a branch.'
   },
   {
     target: 'branches',
     view: 'branch',
-    eyebrow: 'Five · Explore',
+    eyebrow: 'Six · Explore',
     title: 'Turn an approach into isolated work',
-    description: 'Fork promising approaches without contaminating sibling context, then compare and selectively merge what survives review.'
+    description: 'Fork promising approaches without contaminating sibling context, then compare and selectively merge only what survives review.',
+    detail: 'A branch is an execution lane with inherited project context plus its own purpose and constraints. Sibling experiments stay separate.',
+    action: 'Fork when two approaches deserve independent evidence.'
   },
   {
     target: 'agent-runs',
     view: 'branch',
-    eyebrow: 'Six · Execute',
+    eyebrow: 'Seven · Execute',
     title: 'Supervise real agent work',
-    description: 'Start Codex in an isolated Git worktree, watch evidence arrive, pause or cancel safely, and send only decisions that need you to Attention.'
+    description: 'Start Codex in isolation, watch evidence arrive, pause or cancel safely, and send only decisions that need you to Attention.',
+    detail: 'Hosted runs use Vercel Sandboxes; local runs use detached Git worktrees. Changes stay review-only until a human chooses what crosses over.',
+    action: 'Give each run one concrete, verifiable objective.'
   },
   {
     target: 'inspector',
     view: 'focus',
-    eyebrow: 'Seven · Verify',
+    eyebrow: 'Eight · Verify',
     title: 'Trace conclusions back to their source',
-    description: 'Select any reasoning item to inspect its status, confidence, and provenance—without exposing private chain-of-thought.'
+    description: 'Select any reasoning item to inspect its status, confidence, and provenance without exposing private chain-of-thought.',
+    detail: 'The inspector also shows exactly which inherited context a selected branch can use and keeps the autonomy boundary visible.',
+    action: 'Inspect before trusting or sharing a conclusion.'
   },
   {
     target: 'advanced',
     expandAdvanced: true,
-    eyebrow: 'Eight · Go deeper',
+    eyebrow: 'Nine · Recover',
     title: 'Detail is available when you need it',
-    description: 'Advanced opens the context registry, recovery points, and activity trail. They stay out of the way until the project needs closer inspection.'
+    description: 'Advanced opens the context registry, recovery points, and activity trail. They stay out of the way until the project needs closer inspection.',
+    detail: 'Context controls what agents can receive. Recovery checkpoints make material merges reversible. Activity records decisions without recreating a transcript.',
+    action: 'You are ready to work from Focus.'
   }
 ];
 
@@ -95,6 +123,92 @@ function Button({ children, variant = 'secondary', icon, ...props }) {
   return <button className={`button ${variant}`} {...props}>{icon && <Icon name={icon} />}{children}</button>;
 }
 
+function OnboardingStart({ projects, repositoryInput = 'path', onCreate, onUseExample, onSkip, onValidateRepository }) {
+  const [screen, setScreen] = useState('welcome');
+  const [formStep, setFormStep] = useState(0);
+  const [form, setForm] = useState({ name: '', repoPath: '', brief: '' });
+  const [creating, setCreating] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const [error, setError] = useState('');
+  const example = projects.find((item) => item.name === 'Threadline V2');
+  const existingProject = example || projects[0];
+  const steps = ['Name the work', 'Connect the code', 'Define success'];
+  const canContinue = formStep === 0 ? form.name.trim() : formStep === 1 || form.brief.trim();
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setError('');
+    if (formStep === 1 && form.repoPath.trim()) {
+      setValidating(true);
+      try { await onValidateRepository(form.repoPath); }
+      catch (caught) { setError(caught.message); setValidating(false); return; }
+      setValidating(false);
+    }
+    if (formStep < steps.length - 1) {
+      setFormStep((current) => current + 1);
+      return;
+    }
+    setCreating(true);
+    setError('');
+    try { await onCreate(form); }
+    catch (caught) { setError(caught.message); setCreating(false); }
+  };
+
+  return <div className="onboarding-start">
+    <header className="onboarding-topbar">
+      <div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div>
+      <button className="tour-skip" onClick={onSkip}>Skip onboarding</button>
+    </header>
+
+    {screen === 'welcome' ? <main className="onboarding-welcome">
+      <span className="eyebrow">A workspace for long-running projects</span>
+      <h1>Keep the project’s understanding<br />as organized as its code.</h1>
+      <p>Threadline turns a large coding goal into durable intent, grounded reasoning, isolated branches, and reviewable agent work. Start with your project so every step teaches the real workflow.</p>
+      <div className="onboarding-model" aria-label="How Threadline works">
+        <div><span>01</span><strong>Understand</strong><p>Define success and make the important questions visible.</p></div>
+        <div><span>02</span><strong>Explore</strong><p>Give competing approaches separate context and execution lanes.</p></div>
+        <div><span>03</span><strong>Verify</strong><p>Review evidence, merge selectively, and preserve recovery paths.</p></div>
+      </div>
+      <div className="onboarding-actions">
+        <Button variant="primary" icon="plus" onClick={() => setScreen('create')}>Create my project</Button>
+        {existingProject && <button className="text-button" onClick={() => onUseExample(existingProject.id)}>{example ? 'Explore the example instead' : `Open ${existingProject.name} instead`}</button>}
+      </div>
+      <small className="onboarding-note"><Icon name="shield" />Your repository is scanned read-only. Private and restricted context is never sent to agents.</small>
+    </main> : <main className="project-onboarding">
+      <div className="project-onboarding-intro">
+        <button className="text-button back-link" onClick={() => formStep ? setFormStep((current) => current - 1) : setScreen('welcome')}>← Back</button>
+        <span className="eyebrow">Create your first project</span>
+        <h1>{steps[formStep]}</h1>
+        <p>{formStep === 0 && 'Use a clear name for the body of work—not the chat or agent doing it.'}{formStep === 1 && 'Ground the workspace in a repository now, or connect one later from Focus.'}{formStep === 2 && 'Describe the result you want and the behavior or constraint that matters most.'}</p>
+        <ol className="onboarding-step-list">
+          {steps.map((label, index) => <li key={label} className={index === formStep ? 'active' : index < formStep ? 'complete' : ''}><span>{index < formStep ? '✓' : index + 1}</span>{label}</li>)}
+        </ol>
+      </div>
+      <form className="project-onboarding-form" onSubmit={submit}>
+        <div className="project-form-step">
+          <span className="step-kicker">Step {formStep + 1} of {steps.length}</span>
+          {formStep === 0 && <Field label="Project name" hint="You can change the project intent later." value={form.name} required autoFocus onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Payments migration" />}
+          {formStep === 1 && <Field
+            label={repositoryInput === 'url' ? 'GitHub repository URL' : 'Repository path'}
+            hint={repositoryInput === 'url' ? 'Optional. Public repositories work directly; private repositories use your server’s read-only GitHub token.' : 'Optional. Threadline reads a secret-filtered snapshot and keeps agent edits in isolated worktrees.'}
+            value={form.repoPath}
+            autoFocus
+            onChange={(event) => { setError(''); setForm({ ...form, repoPath: event.target.value }); }}
+            placeholder={repositoryInput === 'url' ? 'https://github.com/owner/repository' : '/Users/you/code/product'}
+          />}
+          {formStep === 2 && <Field as="textarea" label="What are you trying to accomplish?" hint="Include one outcome or constraint that would tell a future collaborator what good looks like." value={form.brief} required autoFocus onChange={(event) => setForm({ ...form, brief: event.target.value })} placeholder="Replace the legacy billing flow while preserving invoice behavior and a safe rollback path…" />}
+          {formStep === 1 && <p className="form-assurance"><Icon name="shield" /><span>No repository? Continue without one and connect it later.</span></p>}
+          {error && <p className="form-error" role="alert">{error}</p>}
+        </div>
+        <footer>
+          <span>{formStep === 2 ? 'Threadline will turn this into editable structured intent.' : 'Nothing is sent to an agent during setup.'}</span>
+          <Button type="submit" variant="primary" disabled={!canContinue || creating || validating}>{validating ? 'Checking repository…' : creating ? 'Creating workspace…' : formStep === 2 ? 'Create project and continue' : 'Continue'}</Button>
+        </footer>
+      </form>
+    </main>}
+  </div>;
+}
+
 function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }) {
   const step = onboardingSteps[stepIndex];
   const [targetRect, setTargetRect] = useState(null);
@@ -104,7 +218,7 @@ function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }
     let frame;
     const measure = () => {
       frame = window.requestAnimationFrame(() => {
-        const target = step.target ? document.querySelector(`[data-tour="${step.target}"]`) : null;
+        const target = step.target && window.innerWidth >= 760 ? document.querySelector(`[data-tour="${step.target}"]`) : null;
         if (!target) { setTargetRect(null); return; }
         const rect = target.getBoundingClientRect();
         setTargetRect(rect.width && rect.height ? {
@@ -151,7 +265,7 @@ function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }
     const margin = 16;
     const gap = 18;
     const cardWidth = Math.min(370, window.innerWidth - margin * 2);
-    const cardHeight = Math.min(330, window.innerHeight - margin * 2);
+    const cardHeight = Math.min(430, window.innerHeight - margin * 2);
     const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
     if (targetRect.right + gap + cardWidth <= window.innerWidth - margin) {
       return { left: targetRect.right + gap, top: clamp(targetRect.top, margin, window.innerHeight - cardHeight - margin) };
@@ -183,6 +297,8 @@ function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }
         <span className="eyebrow">{step.eyebrow}</span>
         <h2 id="tour-title">{step.title}</h2>
         <p id="tour-description">{step.description}</p>
+        <div className="tour-lesson"><strong>Why this matters</strong><p>{step.detail}</p></div>
+        <p className="tour-action"><Icon name="chevron" />{step.action}</p>
       </div>
       <div className="tour-progress" aria-label={`Step ${stepIndex + 1} of ${onboardingSteps.length}`}>
         {onboardingSteps.map((item, index) => <span key={item.title} className={index <= stepIndex ? 'complete' : ''}></span>)}
@@ -195,7 +311,7 @@ function OnboardingTour({ stepIndex, layoutKey, onStepChange, onSkip, onFinish }
   </div>;
 }
 
-function Modal({ title, description, children, onClose }) {
+function Modal({ title, description, children, onClose, className = '' }) {
   useEffect(() => {
     const handler = (event) => event.key === 'Escape' && onClose();
     document.addEventListener('keydown', handler);
@@ -203,7 +319,7 @@ function Modal({ title, description, children, onClose }) {
   }, [onClose]);
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <section className={`modal ${className}`} role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <header><div><h2 id="modal-title">{title}</h2>{description && <p>{description}</p>}</div><button className="icon-button" aria-label="Close dialog" onClick={onClose}><Icon name="close" /></button></header>
         {children}
       </section>
@@ -216,23 +332,84 @@ function Field({ label, hint, as = 'input', ...props }) {
   return <label className="field"><span>{label}</span>{hint && <small>{hint}</small>}<Element {...props} /></label>;
 }
 
-function NewProjectModal({ onClose, onCreate }) {
+function NewProjectModal({ onClose, onCreate, onValidateRepository, repositoryInput = 'path' }) {
   const [form, setForm] = useState({ name: '', repoPath: '', brief: '' });
+  const [step, setStep] = useState(0);
   const [error, setError] = useState('');
   const [creating, setCreating] = useState(false);
+  const [validating, setValidating] = useState(false);
+  const stepBodyRef = useRef(null);
+  const steps = ['Name', 'Repository', 'Objective'];
+  useEffect(() => {
+    if (!error) return;
+    const frame = window.requestAnimationFrame(() => {
+      if (stepBodyRef.current) stepBodyRef.current.scrollTop = stepBodyRef.current.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [error]);
   const submit = async (event) => {
     event.preventDefault();
     setError('');
+    if (step === 1 && form.repoPath.trim()) {
+      setValidating(true);
+      try { await onValidateRepository(form.repoPath); }
+      catch (caught) { setError(caught.message); setValidating(false); return; }
+      setValidating(false);
+    }
+    if (step < steps.length - 1) {
+      setStep((current) => current + 1);
+      return;
+    }
     setCreating(true);
     try { await onCreate(form); } catch (caught) { setError(caught.message); setCreating(false); }
   };
-  return <Modal title="Start from the work, not a chat" description="Threadline turns a repository and a rough objective into durable shared intent." onClose={onClose}>
-    <form className="modal-form" onSubmit={submit}>
-      <Field label="Project name" value={form.name} required autoFocus onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Payments migration" />
-      <Field label="Repository path" hint="Threadline scans a secret-filtered snapshot. Agent edits stay in isolated worktrees, never this active checkout." value={form.repoPath} onChange={(event) => setForm({ ...form, repoPath: event.target.value })} placeholder="/Users/you/code/product" />
-      <Field as="textarea" label="What are you trying to accomplish?" value={form.brief} required onChange={(event) => setForm({ ...form, brief: event.target.value })} placeholder="Replace the legacy billing flow without changing invoice behavior…" />
+  const canContinue = step === 0 ? form.name.trim() : step === 1 || form.brief.trim();
+  return <Modal className="project-setup-modal" title="Create a project" description="Three short steps create durable intent and ground it in the right code." onClose={onClose}>
+    <form className="modal-form project-setup-form" onSubmit={submit}>
+      <div className="modal-step-progress" aria-label={`Step ${step + 1} of ${steps.length}`}>{steps.map((label, index) => <span key={label} className={index === step ? 'active' : index < step ? 'complete' : ''}><i>{index < step ? '✓' : index + 1}</i>{label}</span>)}</div>
+      <div className="modal-step-body" ref={stepBodyRef}>
+      {step === 0 && <><span className="eyebrow">Name the work</span><Field label="Project name" hint="Use the body of work, not the chat or agent name." value={form.name} required autoFocus onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Finance management" /></>}
+      {step === 1 && <><span className="eyebrow">Connect the code</span><Field
+        label={repositoryInput === 'url' ? 'GitHub repository URL' : 'Repository path'}
+        hint={repositoryInput === 'url'
+          ? 'Optional. Public repositories work directly; private repositories use the read-only GitHub token configured on the server.'
+          : 'Optional. Use the exact absolute path, including capitalization. Agent edits stay in isolated worktrees.'}
+        value={form.repoPath}
+        autoFocus
+        onChange={(event) => { setError(''); setForm({ ...form, repoPath: event.target.value }); }}
+        placeholder={repositoryInput === 'url' ? 'https://github.com/owner/repository' : '/Users/you/code/product'}
+      /><p className="form-assurance"><Icon name="shield" /><span>Leave this blank to connect a repository later from Focus.</span></p></>}
+      {step === 2 && <><span className="eyebrow">Define success</span><Field as="textarea" label="What are you trying to accomplish?" hint="Include the result and one behavior or constraint worth preserving." value={form.brief} required autoFocus onChange={(event) => setForm({ ...form, brief: event.target.value })} placeholder="Create a financial modeling project with clear assumptions and reviewable calculations…" /></>}
       {error && <p className="form-error" role="alert">{error}</p>}
-      <footer><Button type="button" onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={creating}>{creating ? 'Opening repository…' : 'Create structured intent'}</Button></footer>
+      </div>
+      <footer><div>{step > 0 && <Button type="button" onClick={() => { setError(''); setStep((current) => current - 1); }}>Back</Button>}<Button type="button" onClick={onClose}>Cancel</Button></div><Button type="submit" variant="primary" disabled={!canContinue || creating || validating}>{validating ? 'Checking repository…' : creating ? 'Creating project…' : step === 2 ? 'Create project' : 'Continue'}</Button></footer>
+    </form>
+  </Modal>;
+}
+
+function RepositoryModal({ project, repositoryInput = 'path', onClose, onConnect }) {
+  const [location, setLocation] = useState(project.repoPath || '');
+  const [connecting, setConnecting] = useState(false);
+  const [error, setError] = useState('');
+  return <Modal title={project.repository?.scannedAt ? 'Change repository' : 'Connect a repository'} description="Threadline validates and scans the repository before changing project context." onClose={onClose}>
+    <form className="modal-form" onSubmit={async (event) => {
+      event.preventDefault();
+      setConnecting(true);
+      setError('');
+      try { await onConnect(location); } catch (caught) { setError(caught.message); setConnecting(false); }
+    }}>
+      <Field
+        label={repositoryInput === 'url' ? 'GitHub repository URL' : 'Repository path'}
+        hint={repositoryInput === 'url' ? 'Use a full github.com/owner/repository URL.' : 'Use the exact absolute path, including capitalization.'}
+        value={location}
+        required
+        autoFocus
+        onChange={(event) => { setError(''); setLocation(event.target.value); }}
+        placeholder={repositoryInput === 'url' ? 'https://github.com/owner/repository' : '/Users/you/code/product'}
+      />
+      <p className="safety-note"><Icon name="shield" /><span>The scan is read-only and excludes secret-like files. Existing project intent and branches are preserved.</span></p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <footer><Button type="button" onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={connecting || !location.trim()}>{connecting ? 'Validating…' : 'Connect and scan'}</Button></footer>
     </form>
   </Modal>;
 }
@@ -269,7 +446,9 @@ function AgentRunModal({ branch, adapter, onClose, onStart }) {
         <div><strong>{adapter?.name || 'Coding agent unavailable'}</strong><small>{adapter?.available ? `${adapter.version || 'Ready'} · isolated worktree` : adapter?.error || 'Start Threadline with a supported coding-agent adapter.'}</small></div>
       </div>
       <Field as="textarea" label="Agent task" hint="Keep it narrow enough to verify in one run." required autoFocus value={task} onChange={(event) => setTask(event.target.value)} />
-      <p className="safety-note"><Icon name="shield" /><span>Threadline creates an isolated Git worktree from committed HEAD. The agent cannot edit your active checkout, and uncommitted changes there are not included.</span></p>
+      <p className="safety-note"><Icon name="shield" /><span>{adapter?.safety === 'isolated-sandbox'
+        ? 'Threadline creates an isolated Vercel Sandbox from the repository. Agent network access is restricted to OpenAI, and changes remain review-only.'
+        : 'Threadline creates an isolated Git worktree from committed HEAD. The agent cannot edit your active checkout, and changes remain review-only.'}</span></p>
       {error && <p className="form-error" role="alert">{error}</p>}
       <footer><Button type="button" onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" icon="play" disabled={starting || !adapter?.available}>{starting ? 'Starting…' : 'Start isolated run'}</Button></footer>
     </form>
@@ -301,14 +480,47 @@ function MergeModal({ project, source, onClose, onMerge }) {
   const changes = source.output.changes || [];
   const [acceptedIds, setAcceptedIds] = useState(changes.filter((change) => change.selected !== false).map((change) => change.id));
   const toggle = (id) => setAcceptedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
-  return <Modal title={`Review ${source.name}`} description={`Choose exactly what crosses into ${target.name}. A rollback checkpoint is created automatically.`} onClose={onClose}>
+  return <Modal title={`Merge findings from ${source.name}`} description={`Choose which summaries cross into ${target.name}. This does not apply agent code; use Integrate selected files on the completed run.`} onClose={onClose}>
     <div className="change-list">
       {changes.length ? changes.map((change) => <label className="change-item" key={change.id}>
         <input type="checkbox" checked={acceptedIds.includes(change.id)} onChange={() => toggle(change.id)} />
         <span><strong>{change.title}</strong><small>{change.detail}</small></span>
       </label>) : <div className="empty-state compact"><strong>No reviewable changes yet</strong><p>Complete branch work before merging it.</p></div>}
     </div>
-    <footer className="modal-footer"><span>{acceptedIds.length} of {changes.length} selected</span><div><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!acceptedIds.length} onClick={() => onMerge({ sourceId: source.id, targetId: target.id, acceptedIds })}>Merge selected</Button></div></footer>
+    <footer className="modal-footer"><span>{acceptedIds.length} of {changes.length} selected</span><div><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!acceptedIds.length} onClick={() => onMerge({ sourceId: source.id, targetId: target.id, acceptedIds })}>Merge selected findings</Button></div></footer>
+  </Modal>;
+}
+
+function projectIntegrationBranch(project) {
+  const projectSlug = String(project.name || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'project';
+  return project.integration?.branchName || `threadline/${projectSlug}-${project.id.slice(0, 6)}`;
+}
+
+function IntegrationModal({ project, run, onClose, onIntegrate }) {
+  const files = run.files || [];
+  const branch = project.branches.find((item) => item.id === run.branchId);
+  const [selected, setSelected] = useState(files);
+  const [commitMessage, setCommitMessage] = useState(`Threadline: accept ${branch?.name || 'agent run'}`);
+  const [integrating, setIntegrating] = useState(false);
+  const [error, setError] = useState('');
+  const toggle = (file) => setSelected((current) => current.includes(file) ? current.filter((item) => item !== file) : [...current, file]);
+  return <Modal title="Integrate agent code" description="Commit selected files to Threadline’s project branch. Your active checkout is never changed." onClose={onClose}>
+    <form className="modal-form integration-form" onSubmit={async (event) => {
+      event.preventDefault();
+      setIntegrating(true);
+      setError('');
+      try { await onIntegrate({ filePaths: selected, commitMessage }); }
+      catch (caught) { setError(caught.message); setIntegrating(false); }
+    }}>
+      <div className="integration-destination"><span>Destination</span><code>{projectIntegrationBranch(project)}</code><small>Future local agents start from the accepted commit.</small></div>
+      <div className="change-list integration-file-list">
+        {files.map((file) => <label className="change-item" key={file}><input type="checkbox" checked={selected.includes(file)} onChange={() => toggle(file)} /><span><strong>{file}</strong><small>Accept the complete file change from this run.</small></span></label>)}
+      </div>
+      <Field label="Commit message" value={commitMessage} required onChange={(event) => setCommitMessage(event.target.value)} />
+      <p className="safety-note"><Icon name="shield" /><span>Changes are applied with Git’s three-way merge inside a dedicated Threadline worktree. Conflicts leave the project branch unchanged.</span></p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <footer><span className="selection-count">{selected.length} of {files.length} selected</span><div><Button type="button" onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={integrating || !selected.length || !commitMessage.trim()}>{integrating ? 'Integrating…' : 'Integrate selected files'}</Button></div></footer>
+    </form>
   </Modal>;
 }
 
@@ -357,7 +569,7 @@ function ReasoningItem({ item, onInspect, onResolve, onFork }) {
   </article>;
 }
 
-function FocusView({ project, onDraft, onResolve, onChallenge, onInspect, onFork, onScan }) {
+function FocusView({ project, onDraft, onResolve, onChallenge, onInspect, onFork, onScan, onConnect }) {
   const [drafting, setDrafting] = useState(false);
   const [scanning, setScanning] = useState(false);
   const active = project.reasoning || [];
@@ -377,8 +589,8 @@ function FocusView({ project, onDraft, onResolve, onChallenge, onInspect, onFork
   return <article className="focus-view">
     <div className="view-heading focus-heading"><div><span className="eyebrow">Project focus</span><h1>{project.intent.objective}</h1><p>Review the current frame before committing work to a branch.</p></div><div><Button icon="spark" disabled={drafting} onClick={refresh}>{drafting ? 'Thinking…' : active.length ? 'Refresh focus' : 'Draft focus'}</Button></div></div>
     <section className={`repository-strip ${project.repository?.scannedAt ? 'connected' : ''}`} data-tour="repository">
-      <div><span className="repository-state"><i></i>{project.repository?.scannedAt ? `${project.repository.name} · ${project.repository.branch}` : 'Repository not scanned'}</span><strong>{project.repository?.scannedAt ? `${project.repository.fileCount} tracked files · ${project.repository.changedFiles?.length || 0} local changes` : project.repoPath || 'Add a repository path to ground this project.'}</strong>{project.repository?.scannedAt && <small>Updated {new Date(project.repository.scannedAt).toLocaleString()}</small>}</div>
-      <Button onClick={scan} disabled={scanning || !project.repoPath}>{scanning ? 'Scanning…' : project.repository?.scannedAt ? 'Refresh repository' : 'Scan repository'}</Button>
+      <div><span className="repository-state"><i></i>{project.repository?.scannedAt ? `${project.repository.name} · ${project.repository.branch}` : 'Repository not scanned'}</span><strong>{project.repository?.scannedAt ? `${project.repository.fileCount} tracked files · ${project.repository.changedFiles?.length || 0} local changes` : project.repoPath || 'Add a repository path to ground this project.'}</strong>{project.integration?.headCommit && <small>Accepted code: {project.integration.branchName} · {project.integration.headCommit.slice(0, 8)}</small>}{project.repository?.scannedAt && !project.integration?.headCommit && <small>Updated {new Date(project.repository.scannedAt).toLocaleString()}</small>}</div>
+      <div className="repository-actions">{project.repository?.scannedAt && <Button onClick={onConnect}>Change</Button>}<Button onClick={project.repoPath ? scan : onConnect} disabled={scanning}>{scanning ? 'Scanning…' : project.repository?.scannedAt ? 'Refresh repository' : project.repoPath ? 'Scan repository' : 'Connect repository'}</Button></div>
     </section>
     {!active.length ? <section className="focus-empty" data-tour="reasoning-items"><div className="empty-graphic"><Icon name="spark" size={24} /></div><h2>Make the reasoning visible</h2><p>Threadline will draft a few approaches, evidence items, assumptions, and the question that matters most. Nothing is accepted automatically.</p><Button variant="primary" data-tour="challenge" onClick={refresh} disabled={drafting}>{drafting ? 'Drafting…' : 'Draft reasoning focus'}</Button></section> : <>
       <section className="focus-summary" data-tour="reasoning-items"><div><span className="eyebrow">Current frame</span><strong>{approaches.length} approach{approaches.length === 1 ? '' : 'es'} · {evidence.length} evidence item{evidence.length === 1 ? '' : 's'}</strong><p>{pending ? `${pending} suggestion${pending === 1 ? '' : 's'} still need your review.` : 'Every visible item has been reviewed.'}</p></div><div className="focus-legend"><span><i className="confirmed-dot"></i>Confirmed</span><span><i className="proposed-dot"></i>Proposed</span></div></section>
@@ -418,7 +630,7 @@ function IntentView({ project, onSave, onDraft }) {
 
 const activeRunStatuses = new Set(['queued', 'running', 'paused']);
 
-function AgentRunPanel({ run, adapter, onStart, onControl }) {
+function AgentRunPanel({ run, adapter, projectIntegration, onStart, onControl, onIntegrate }) {
   const [expandedDiff, setExpandedDiff] = useState(false);
   if (!run) return <section className="agent-panel agent-empty" data-tour="agent-runs">
     <div className="agent-empty-copy"><span className="agent-mark"><Icon name="terminal" /></span><div><span className="eyebrow">Agent execution</span><h2>Turn this branch into supervised work</h2><p>Codex works in an isolated Git worktree while Threadline keeps progress, evidence, and control visible.</p></div></div>
@@ -435,6 +647,7 @@ function AgentRunPanel({ run, adapter, onStart, onControl }) {
         {canPause && <Button icon="pause" onClick={() => onControl(run, 'pause')}>Pause</Button>}
         {canResume && <Button icon="play" onClick={() => onControl(run, 'resume')}>Resume</Button>}
         {canCancel && <Button icon="stop" onClick={() => onControl(run, 'cancel')}>Cancel run</Button>}
+        {!canCancel && run.status === 'completed' && run.files?.length > 0 && adapter?.supportsIntegration && !run.integration?.commit && <Button variant="primary" icon="check" onClick={() => onIntegrate(run)}>Integrate selected files</Button>}
         {!canCancel && <Button icon="play" onClick={onStart}>Run again</Button>}
       </div>
     </header>
@@ -451,12 +664,19 @@ function AgentRunPanel({ run, adapter, onStart, onControl }) {
       </aside>
     </div>
     {run.summary && <p className="run-summary">{run.summary}</p>}
+    {run.integration?.commit && <div className="integration-result"><Icon name="check" /><div>
+      <strong>Integrated into {run.integration.branchName}</strong>
+      <p>{run.integration.files.length} file{run.integration.files.length === 1 ? '' : 's'} committed at <code>{run.integration.commit}</code>.</p>
+      {projectIntegration?.workspacePath && <p>Threadline workspace: <code>{projectIntegration.workspacePath}</code></p>}
+      <p>When final review is complete, run <code>git merge {run.integration.branchName}</code> from your normal checkout.</p>
+    </div></div>}
+    {!canCancel && run.status === 'completed' && run.files?.length > 0 && !adapter?.supportsIntegration && <p className="hosted-review-note"><Icon name="shield" />Hosted runs remain review-only. Local Threadline can integrate accepted files into a project branch.</p>}
     {expandedDiff && run.diff && <pre className="diff-preview">{run.diff}</pre>}
     {run.worktreePath && <p className="worktree-path"><Icon name="shield" />Isolated at <code>{run.worktreePath}</code></p>}
   </section>;
 }
 
-function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork, onMerge, onAnalyze, onStartAgent, onControlAgent }) {
+function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork, onMerge, onAnalyze, onStartAgent, onControlAgent, onIntegrate }) {
   const [analyzing, setAnalyzing] = useState(false);
   const parent = project.branches.find((item) => item.id === branch.parentId);
   const changes = branch.output.changes || [];
@@ -468,8 +688,8 @@ function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork
       <section className="output-card"><header><div><span className={`status-pill ${branch.status}`}>{branch.status}</span><h2>Current output</h2></div><span className="updated">Updated {new Date(branch.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></header><p>{branch.output.summary || 'This branch has not produced an output yet.'}</p></section>
       <section className="understanding-card"><span className="eyebrow">Shared understanding</span><strong>{contexts.length} context items available</strong><p>{contexts.some((item) => item.sensitivity !== 'shared') ? 'Private context is excluded from agents.' : 'Every listed item is available to this branch.'}</p></section>
     </div>
-    <AgentRunPanel run={latestRun} adapter={adapter} onStart={onStartAgent} onControl={onControlAgent} />
-    <section className="changes-section"><header><div><span className="eyebrow">Reviewable work</span><h2>Proposed changes</h2></div>{branch.parentId && changes.length > 0 && branch.status !== 'merged' && <Button icon="compare" onClick={onMerge}>Compare and merge</Button>}</header>
+    <AgentRunPanel run={latestRun} adapter={adapter} projectIntegration={project.integration} onStart={onStartAgent} onControl={onControlAgent} onIntegrate={onIntegrate} />
+    <section className="changes-section"><header><div><span className="eyebrow">Reviewable findings</span><h2>Proposed findings</h2></div>{branch.parentId && changes.length > 0 && branch.status !== 'merged' && <Button icon="compare" onClick={onMerge}>Compare findings</Button>}</header>
       {changes.length ? <div className="proposed-changes">{changes.map((change) => <div className="proposed-change" key={change.id}><span className="change-mark"><Icon name="check" /></span><div><strong>{change.title}</strong><p>{change.detail}</p>{change.mergedFrom && <small>Merged from another branch</small>}</div></div>)}</div> : <div className="empty-state"><div className="empty-graphic"><Icon name="branch" size={24} /></div><strong>No proposed changes yet</strong><p>Start the branch after its purpose and inherited context look right.</p></div>}
     </section>
   </article>;
@@ -517,6 +737,34 @@ function Inspector({ project, branch, contexts, reasoningItem }) {
   </aside>;
 }
 
+function HostedGate({ configured, onUnlock }) {
+  const [token, setToken] = useState('');
+  const [error, setError] = useState('');
+  const [checking, setChecking] = useState(false);
+  if (!configured) return <div className="onboarding hosted-gate">
+    <div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div>
+    <span className="eyebrow">Hosted setup required</span>
+    <h1>Complete hosted setup<br />before opening the workspace.</h1>
+    <p>Add a Postgres integration in Vercel, then configure <code>DATABASE_URL</code> and a strong <code>THREADLINE_ACCESS_TOKEN</code> for Production and Preview.</p>
+  </div>;
+  return <div className="onboarding hosted-gate">
+    <div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div>
+    <span className="eyebrow">Private workspace</span>
+    <h1>Enter your Threadline<br />access code.</h1>
+    <p>The code stays in this browser tab and protects project context and agent controls.</p>
+    <form className="access-form" onSubmit={async (event) => {
+      event.preventDefault();
+      setChecking(true);
+      setError('');
+      try { await onUnlock(token); } catch (caught) { setError(caught.message); setChecking(false); }
+    }}>
+      <input type="password" required autoFocus value={token} onChange={(event) => setToken(event.target.value)} placeholder="Access code" aria-label="Threadline access code" />
+      <Button type="submit" variant="primary" disabled={checking}>{checking ? 'Checking…' : 'Open workspace'}</Button>
+    </form>
+    {error && <p className="form-error" role="alert">{error}</p>}
+  </div>;
+}
+
 export function App() {
   const [projects, setProjects] = useState([]);
   const [project, setProject] = useState(null);
@@ -528,10 +776,14 @@ export function App() {
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState('');
   const [loading, setLoading] = useState(true);
+  const [onboardingEntryOpen, setOnboardingEntryOpen] = useState(false);
   const [tourOpen, setTourOpen] = useState(false);
   const [tourStep, setTourStep] = useState(0);
   const [inspectedReasoningId, setInspectedReasoningId] = useState(null);
   const [branchDraft, setBranchDraft] = useState(null);
+  const [integrationRunId, setIntegrationRunId] = useState(null);
+  const [health, setHealth] = useState(null);
+  const [needsAccess, setNeedsAccess] = useState(false);
 
   const notify = (message) => {
     setToast(message);
@@ -550,10 +802,38 @@ export function App() {
     setLoading(false);
   };
 
+  const loadWorkspace = async () => {
+    try {
+      await refreshProjects();
+      const result = await api.listAdapters();
+      setAdapter(result.adapters[0] || null);
+      setNeedsAccess(false);
+      try { setOnboardingEntryOpen(!window.localStorage.getItem(ONBOARDING_STORAGE_KEY)); }
+      catch { setOnboardingEntryOpen(true); }
+    } catch (error) {
+      if (error.status === 401) {
+        setAccessToken('');
+        setNeedsAccess(true);
+      } else notify(error.message);
+      setLoading(false);
+      throw error;
+    }
+  };
+
   useEffect(() => {
-    Promise.all([refreshProjects(), api.listAdapters().then((result) => setAdapter(result.adapters[0] || null))])
-      .catch((error) => { notify(error.message); setLoading(false); });
+    api.health().then(async (result) => {
+      setHealth(result);
+      if (result.mode === 'cloud' && !result.configured) { setLoading(false); return; }
+      if (result.authRequired && !getAccessToken()) { setNeedsAccess(true); setLoading(false); return; }
+      await loadWorkspace();
+    }).catch((error) => { notify(error.message); setLoading(false); });
   }, []);
+
+  const unlockHostedWorkspace = async (token) => {
+    setAccessToken(token);
+    try { await loadWorkspace(); }
+    catch (error) { setAccessToken(''); throw error; }
+  };
 
   useEffect(() => {
     const hasActiveRun = project?.agentRuns?.some((run) => activeRunStatuses.has(run.status));
@@ -566,15 +846,6 @@ export function App() {
     }, 1200);
     return () => window.clearInterval(interval);
   }, [project?.id, project?.agentRuns?.map((run) => `${run.id}:${run.status}`).join('|')]);
-
-  useEffect(() => {
-    if (!project) return;
-    try {
-      if (!window.localStorage.getItem(ONBOARDING_STORAGE_KEY)) setTourOpen(true);
-    } catch {
-      setTourOpen(true);
-    }
-  }, [project?.id]);
 
   useEffect(() => {
     if (!tourOpen || !project) return;
@@ -590,6 +861,7 @@ export function App() {
 
   const closeTour = () => {
     try { window.localStorage.setItem(ONBOARDING_STORAGE_KEY, 'true'); } catch { /* Local storage can be unavailable in privacy mode. */ }
+    setOnboardingEntryOpen(false);
     setTourOpen(false);
   };
 
@@ -613,12 +885,33 @@ export function App() {
     if (message) notify(message);
   };
 
+  const validateRepositoryLocation = async (location) => api.inspectRepository(location);
+
   const createProject = async (form) => {
     const result = await api.createProject(form);
     setModal(null);
     setSelection({ type: 'focus', id: null });
     await refreshProjects(result.project.id);
     notify('Project created with a structured intent');
+    return result.project;
+  };
+
+  const createOnboardingProject = async (form) => {
+    await createProject(form);
+    setOnboardingEntryOpen(false);
+    setTourStep(0);
+    setTourOpen(true);
+  };
+
+  const useExampleForOnboarding = async (projectId) => {
+    if (project?.id !== projectId) {
+      const result = await api.getProject(projectId);
+      setProject(result.project);
+    }
+    setSelection({ type: 'focus', id: null });
+    setOnboardingEntryOpen(false);
+    setTourStep(0);
+    setTourOpen(true);
   };
 
   const createBranch = async (form) => {
@@ -631,27 +924,31 @@ export function App() {
   };
 
   const content = () => {
-    if (selection.type === 'focus') return <FocusView project={project} onDraft={async () => { const result = await api.draftReasoning(project.id); applyProject(result.project, result.source === 'model' ? 'Focus drafted with your configured model' : 'Focus drafted locally'); }} onResolve={async (item, status) => { const result = await api.resolveReasoning(project.id, item.id, status); if (status === 'rejected' && inspectedReasoningId === item.id) setInspectedReasoningId(null); applyProject(result.project, status === 'confirmed' ? 'Added to shared understanding' : 'Suggestion dismissed'); }} onChallenge={async () => applyProject((await api.challengeReasoning(project.id)).project, 'Counterpoint added for review')} onInspect={(item) => setInspectedReasoningId(item.id)} onFork={(item) => { setBranchDraft({ name: item.title, purpose: item.summary, context: `Explore this proposed approach without changing sibling context. Source: ${item.sourceLabel}` }); setModal('branch'); }} onScan={async () => { try { applyProject((await api.scanRepository(project.id)).project, 'Repository snapshot refreshed'); } catch (error) { notify(error.message); } }} />;
+    if (selection.type === 'focus') return <FocusView project={project} onDraft={async () => { const result = await api.draftReasoning(project.id); applyProject(result.project, result.source === 'model' ? 'Focus drafted with your configured model' : 'Focus drafted locally'); }} onResolve={async (item, status) => { const result = await api.resolveReasoning(project.id, item.id, status); if (status === 'rejected' && inspectedReasoningId === item.id) setInspectedReasoningId(null); applyProject(result.project, status === 'confirmed' ? 'Added to shared understanding' : 'Suggestion dismissed'); }} onChallenge={async () => applyProject((await api.challengeReasoning(project.id)).project, 'Counterpoint added for review')} onInspect={(item) => setInspectedReasoningId(item.id)} onFork={(item) => { setBranchDraft({ name: item.title, purpose: item.summary, context: `Explore this proposed approach without changing sibling context. Source: ${item.sourceLabel}` }); setModal('branch'); }} onScan={async () => { try { applyProject((await api.scanRepository(project.id)).project, 'Repository snapshot refreshed'); } catch (error) { notify(error.message); setModal('repository'); } }} onConnect={() => setModal('repository')} />;
     if (selection.type === 'intent') return <IntentView project={project} onSave={async (intent) => applyProject((await api.updateIntent(project.id, intent)).project, 'Intent saved')} onDraft={async (brief) => { const result = await api.draftSpec(project.id, brief); notify(result.source === 'model' ? 'Spec refined with your configured model' : 'Spec refined locally'); return result.intent; }} />;
     if (selection.type === 'attention') return <AttentionView project={project} onOpenBranch={(id) => setSelection({ type: 'branch', id })} onResolve={async (item) => applyProject((await api.resolveAttention(project.id, item.id)).project, 'Attention item resolved')} />;
     if (selection.type === 'context') return <ContextView project={project} onAdd={() => setModal('context')} />;
     if (selection.type === 'recovery') return <RecoveryView project={project} onCheckpoint={async () => applyProject((await api.createCheckpoint(project.id, `Manual checkpoint ${project.checkpoints.length + 1}`)).project, 'Checkpoint created')} onRestore={async (checkpoint) => applyProject((await api.restoreCheckpoint(project.id, checkpoint.id)).project, `${checkpoint.name} restored`)} />;
     if (selection.type === 'activity') return <ActivityView project={project} />;
-    if (selectedBranch) return <BranchView project={project} branch={selectedBranch} contexts={contexts} runs={project.agentRuns.filter((run) => run.branchId === selectedBranch.id)} adapter={adapter} onUpdate={async (updates) => applyProject((await api.updateBranch(project.id, selectedBranch.id, updates)).project, `${selectedBranch.name} moved to ${updates.status}`)} onFork={() => { setBranchDraft(null); setModal('branch'); }} onMerge={() => setModal('merge')} onAnalyze={async () => { try { const result = await api.analyzeBranch(project.id, selectedBranch.id); applyProject(result.project, result.source === 'model' ? 'Branch analyzed with your configured model' : 'Branch analyzed locally'); } catch (error) { notify(error.message); } }} onStartAgent={() => setModal('agent')} onControlAgent={async (run, action) => { try { const result = await api.controlAgentRun(project.id, run.id, action); applyProject(result.project, action === 'cancel' ? 'Cancellation requested' : `Agent ${action}d`); } catch (error) { notify(error.message); } }} />;
+    if (selectedBranch) return <BranchView project={project} branch={selectedBranch} contexts={contexts} runs={project.agentRuns.filter((run) => run.branchId === selectedBranch.id)} adapter={adapter} onUpdate={async (updates) => applyProject((await api.updateBranch(project.id, selectedBranch.id, updates)).project, `${selectedBranch.name} moved to ${updates.status}`)} onFork={() => { setBranchDraft(null); setModal('branch'); }} onMerge={() => setModal('merge')} onAnalyze={async () => { try { const result = await api.analyzeBranch(project.id, selectedBranch.id); applyProject(result.project, result.source === 'model' ? 'Branch analyzed with your configured model' : 'Branch analyzed locally'); } catch (error) { notify(error.message); } }} onStartAgent={() => setModal('agent')} onControlAgent={async (run, action) => { try { const result = await api.controlAgentRun(project.id, run.id, action); applyProject(result.project, action === 'cancel' ? 'Cancellation requested' : `Agent ${action}d`); } catch (error) { notify(error.message); } }} onIntegrate={(run) => { setIntegrationRunId(run.id); setModal('integrate'); }} />;
     return null;
   };
 
   if (loading) return <div className="loading-screen"><div className="brand-mark"><span></span><span></span><span></span></div><p>Loading shared understanding…</p></div>;
-  if (!project) return <div className="onboarding"><div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div><h1>Keep humans and coding agents<br />on the same page.</h1><p>Open a repository, define what good looks like, and carry that understanding through every branch and change.</p><Button variant="primary" onClick={() => setModal('project')}>Start a project</Button>{modal === 'project' && <NewProjectModal onClose={() => setModal(null)} onCreate={createProject} />}</div>;
+  if (health?.mode === 'cloud' && (!health.configured || needsAccess)) return <HostedGate configured={health.configured} onUnlock={unlockHostedWorkspace} />;
+  if (onboardingEntryOpen) return <OnboardingStart projects={projects} repositoryInput={health?.repositoryInput} onCreate={createOnboardingProject} onUseExample={useExampleForOnboarding} onSkip={closeTour} onValidateRepository={validateRepositoryLocation} />;
+  if (!project) return <div className="onboarding"><div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div><h1>Keep humans and coding agents<br />on the same page.</h1><p>Open a repository, define what good looks like, and carry that understanding through every branch and change.</p><Button variant="primary" onClick={() => setModal('project')}>Start a project</Button>{modal === 'project' && <NewProjectModal repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onCreate={createProject} onValidateRepository={validateRepositoryLocation} />}</div>;
 
   return <div className="app-shell">
-    <header className="topbar"><div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div><label className="project-select" data-tour="project-switcher"><span className="sr-only">Project</span><select value={project.id} onChange={async (event) => { setSelection({ type: 'focus', id: null }); setInspectedReasoningId(null); const result = await api.getProject(event.target.value); setProject(result.project); }}><option value={project.id}>{project.name}</option>{projects.filter((item) => item.id !== project.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>{project.repoPath || 'No repository selected'}</small></label><div className="top-search"><input aria-label="Filter branches" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter branches…" /></div><div className="top-actions"><span className="local-state"><i></i>Saved locally</span><Button onClick={startTour} icon="spark">Tour</Button><Button onClick={() => setModal('project')} icon="plus">New project</Button></div></header>
+    <header className="topbar"><div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div><label className="project-select" data-tour="project-switcher"><span className="sr-only">Project</span><select value={project.id} onChange={async (event) => { setSelection({ type: 'focus', id: null }); setInspectedReasoningId(null); const result = await api.getProject(event.target.value); setProject(result.project); }}><option value={project.id}>{project.name}</option>{projects.filter((item) => item.id !== project.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>{project.repoPath || 'No repository selected'}</small></label><div className="top-search"><input aria-label="Filter branches" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter branches…" /></div><div className="top-actions"><span className="local-state"><i></i>{health?.mode === 'cloud' ? 'Saved to cloud' : 'Saved locally'}</span><Button onClick={startTour} icon="spark">Tour</Button><Button onClick={() => setModal('project')} icon="plus">New project</Button></div></header>
     <aside className="sidebar"><div className="sidebar-label"><span>Project</span></div><nav aria-label="Project navigation"><button data-tour="focus" className={`nav-row ${selection.type === 'focus' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'focus', id: null })}><Icon name="spark" /><span className="row-copy"><strong>Focus</strong><small>What needs thinking</small></span></button><button data-tour="intent" className={`nav-row ${selection.type === 'intent' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'intent', id: null })}><Icon name="target" /><span className="row-copy"><strong>Intent</strong><small>What good looks like</small></span></button><button className={`nav-row ${selection.type === 'attention' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'attention', id: null })}><Icon name="inbox" /><span className="row-copy"><strong>Attention</strong><small>Only what needs you</small></span>{project.attentionItems.filter((item) => item.status === 'open').length > 0 && <span className="nav-badge">{project.attentionItems.filter((item) => item.status === 'open').length}</span>}</button><div className="branch-navigation" data-tour="branches"><div className="nav-section-heading"><span>Branches</span><button aria-label="Add branch" onClick={() => { setBranchDraft(null); setModal('branch'); }}><Icon name="plus" /></button></div><BranchTree project={project} selectedId={selection.type === 'branch' ? selection.id : null} filter={filter} onSelect={(id) => setSelection({ type: 'branch', id })} /></div></nav><div className="sidebar-bottom" data-tour="advanced"><button className="advanced-toggle" onClick={() => setAdvanced(!advanced)}><span><Icon name="layers" />Advanced</span><Icon name="chevron" /></button>{advanced && <nav className="advanced-nav"><button className={`nav-row ${selection.type === 'context' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'context' })}><Icon name="layers" />Context</button><button className={`nav-row ${selection.type === 'recovery' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'recovery' })}><Icon name="history" />Recovery</button><button className={`nav-row ${selection.type === 'activity' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'activity' })}><Icon name="activity" />Activity</button></nav>}</div></aside>
     <main className="workspace" data-tour="workspace">{content()}</main>
     <div className="inspector-shell" data-tour="inspector"><Inspector project={project} branch={selectedBranch} contexts={contexts} reasoningItem={inspectedReasoning} /></div>
-    {modal === 'project' && <NewProjectModal onClose={() => setModal(null)} onCreate={createProject} />}
+    {modal === 'project' && <NewProjectModal repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onCreate={createProject} onValidateRepository={validateRepositoryLocation} />}
+    {modal === 'repository' && <RepositoryModal project={project} repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onConnect={async (location) => { const result = await api.connectRepository(project.id, location); setModal(null); applyProject(result.project, 'Repository connected and scanned'); }} />}
     {modal === 'branch' && <BranchModal project={project} parentId={selectedBranch?.id || project.branches[0].id} initial={branchDraft} onClose={() => { setModal(null); setBranchDraft(null); }} onCreate={createBranch} />}
-    {modal === 'agent' && selectedBranch && <AgentRunModal branch={selectedBranch} adapter={adapter} onClose={() => setModal(null)} onStart={async (task) => { const result = await api.startAgentRun(project.id, selectedBranch.id, task); setModal(null); applyProject(result.project, `${adapter?.name || 'Agent'} started in an isolated worktree`); }} />}
+    {modal === 'agent' && selectedBranch && <AgentRunModal branch={selectedBranch} adapter={adapter} onClose={() => setModal(null)} onStart={async (task) => { const result = await api.startAgentRun(project.id, selectedBranch.id, task); setModal(null); applyProject(result.project, `${adapter?.name || 'Agent'} started in isolation`); }} />}
+    {modal === 'integrate' && project.agentRuns.find((run) => run.id === integrationRunId) && <IntegrationModal project={project} run={project.agentRuns.find((run) => run.id === integrationRunId)} onClose={() => { setModal(null); setIntegrationRunId(null); }} onIntegrate={async (input) => { const result = await api.integrateAgentRun(project.id, integrationRunId, input); setModal(null); setIntegrationRunId(null); applyProject(result.project, `${input.filePaths.length} file${input.filePaths.length === 1 ? '' : 's'} integrated into ${result.integration.branchName}`); }} />}
     {modal === 'context' && <ContextModal project={project} selectedBranchId={selectedBranch?.id} onClose={() => setModal(null)} onCreate={async (form) => { const result = await api.createContext(project.id, form); setModal(null); applyProject(result.project, `${form.label} added`); }} />}
     {modal === 'merge' && selectedBranch && <MergeModal project={project} source={selectedBranch} onClose={() => setModal(null)} onMerge={async (input) => { const result = await api.merge(project.id, input); setModal(null); applyProject(result.project, `${input.acceptedIds.length} changes merged with a recovery checkpoint`); }} />}
     {toast && <div className="toast" role="status"><Icon name="check" />{toast}</div>}

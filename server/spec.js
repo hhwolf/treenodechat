@@ -22,29 +22,36 @@ function normalizeSpec(spec, brief) {
   };
 }
 
-async function requestRemoteSpec({ brief, currentIntent }) {
-  const url = process.env.LLM_API_URL;
-  const key = process.env.LLM_API_KEY;
-  const model = process.env.LLM_MODEL;
-  if (!url || !key || !model) return null;
-  const response = await fetch(url, {
+async function requestModelJson(system, input) {
+  const key = process.env.OPENAI_API_KEY || process.env.LLM_API_KEY;
+  const model = process.env.OPENAI_MODEL || process.env.LLM_MODEL;
+  if (!key || !model) return null;
+  const legacyUrl = process.env.LLM_API_URL;
+  const response = await fetch(legacyUrl || 'https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: 'Turn a coding-project brief into JSON with objective, audience, outcome, avoid, format, qualityBar, and questions. Ask only questions that materially block safe implementation. Do not include chain-of-thought.'
-        },
-        { role: 'user', content: JSON.stringify({ brief, currentIntent }) }
-      ]
+    body: JSON.stringify(legacyUrl ? {
+      model, response_format: { type: 'json_object' },
+      messages: [{ role: 'system', content: system }, { role: 'user', content: JSON.stringify(input) }]
+    } : {
+      model, instructions: system, input: JSON.stringify(input), store: false,
+      reasoning: { effort: process.env.OPENAI_REASONING_EFFORT || 'medium' },
+      text: { format: { type: 'json_object' }, verbosity: 'low' }
     })
   });
   if (!response.ok) throw new Error(`Model provider returned ${response.status}`);
   const payload = await response.json();
-  return JSON.parse(payload.choices?.[0]?.message?.content || '{}');
+  const output = legacyUrl
+    ? payload.choices?.[0]?.message?.content
+    : payload.output_text || payload.output?.flatMap((item) => item.content || []).find((item) => item.type === 'output_text')?.text;
+  return JSON.parse(output || '{}');
+}
+
+async function requestRemoteSpec({ brief, currentIntent }) {
+  return requestModelJson(
+    'Turn a coding-project brief into JSON with objective, audience, outcome, avoid, format, qualityBar, and questions. Ask only questions that materially block safe implementation. Do not include chain-of-thought.',
+    { brief, currentIntent }
+  );
 }
 
 export async function draftSpec({ brief = '', currentIntent = {} }) {
@@ -126,32 +133,14 @@ function localReasoning(project) {
 }
 
 async function requestRemoteReasoning(project) {
-  const url = process.env.LLM_API_URL;
-  const key = process.env.LLM_API_KEY;
-  const model = process.env.LLM_MODEL;
-  if (!url || !key || !model) return null;
   const sharedContexts = project.contexts
     .filter((item) => item.sensitivity === 'shared')
     .map(({ label, value, scope, source }) => ({ label, value, scope, source }));
   const branches = project.branches.map(({ id, name, purpose, status, output }) => ({ id, name, purpose, status, summary: output.summary }));
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: 'Create a compact reasoning brief for a coding project. Return JSON with items: 2-3 approaches, 1-3 evidence items, 1-2 assumptions, and 1 decisive question. Each item has kind, title, summary, sourceLabel, confidence, and optional branchId. Use only supplied information. Expose concise rationale, never hidden chain-of-thought. Keep the total under 10 items.'
-        },
-        { role: 'user', content: JSON.stringify({ intent: project.intent, sharedContexts, branches, repository: repositoryContext(project.repository) }) }
-      ]
-    })
-  });
-  if (!response.ok) throw new Error(`Model provider returned ${response.status}`);
-  const payload = await response.json();
-  return JSON.parse(payload.choices?.[0]?.message?.content || '{}');
+  return requestModelJson(
+    'Create a compact reasoning brief for a coding project. Return JSON with items: 2-3 approaches, 1-3 evidence items, 1-2 assumptions, and 1 decisive question. Each item has kind, title, summary, sourceLabel, confidence, and optional branchId. Use only supplied information. Expose concise rationale, never hidden chain-of-thought. Keep the total under 10 items.',
+    { intent: project.intent, sharedContexts, branches, repository: repositoryContext(project.repository) }
+  );
 }
 
 export async function draftReasoning(project) {
@@ -181,28 +170,10 @@ function localBranchAnalysis(project, branch, contexts) {
 }
 
 async function requestRemoteBranchAnalysis(project, branch, contexts) {
-  const url = process.env.LLM_API_URL;
-  const key = process.env.LLM_API_KEY;
-  const model = process.env.LLM_MODEL;
-  if (!url || !key || !model) return null;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${key}` },
-    body: JSON.stringify({
-      model,
-      response_format: { type: 'json_object' },
-      messages: [
-        {
-          role: 'system',
-          content: 'Analyze one coding-project branch using only the supplied intent, contexts, and read-only repository snapshot. Return JSON with a concise summary and 2-5 reviewable changes. Each change has title and detail. These are proposed implementation findings, not claims that files were edited. Do not include hidden chain-of-thought.'
-        },
-        { role: 'user', content: JSON.stringify({ intent: project.intent, branch: { name: branch.name, purpose: branch.purpose }, contexts, repository: repositoryContext(project.repository) }) }
-      ]
-    })
-  });
-  if (!response.ok) throw new Error(`Model provider returned ${response.status}`);
-  const payload = await response.json();
-  return JSON.parse(payload.choices?.[0]?.message?.content || '{}');
+  return requestModelJson(
+    'Analyze one coding-project branch using only the supplied intent, contexts, and read-only repository snapshot. Return JSON with a concise summary and 2-5 reviewable changes. Each change has title and detail. These are proposed implementation findings, not claims that files were edited. Do not include hidden chain-of-thought.',
+    { intent: project.intent, branch: { name: branch.name, purpose: branch.purpose }, contexts, repository: repositoryContext(project.repository) }
+  );
 }
 
 function normalizeBranchAnalysis(value, project, branch, contexts) {

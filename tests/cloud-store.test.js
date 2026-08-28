@@ -1,0 +1,68 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { newDb } from 'pg-mem';
+import { createCloudStore } from '../server/cloud-store.js';
+
+function setup(t) {
+  const database = newDb();
+  const { Pool } = database.adapters.createPg();
+  const store = createCloudStore('', { pool: new Pool() });
+  t.after(() => store.close());
+  return store;
+}
+
+test('persists the hosted project graph and excludes private context from agent packages', async (t) => {
+  const store = setup(t);
+  let project = await store.createProject({
+    name: 'Hosted project',
+    repoPath: 'https://github.com/example/project',
+    brief: 'Ship the hosted architecture safely.'
+  });
+  const main = project.branches[0];
+  project = await store.createContext(project.id, { label: 'Shared', value: 'Agents may use this.', scope: 'project', sensitivity: 'shared' });
+  project = await store.createContext(project.id, { label: 'Private', value: 'Never send this.', scope: 'project', sensitivity: 'private' });
+  project = await store.createBranch(project.id, { parentId: main.id, name: 'Cloud path', context: 'Use managed Postgres.' });
+  const branch = project.branches.find((item) => item.name === 'Cloud path');
+  const contexts = await store.inheritedContexts(project.id, branch.id);
+
+  assert.ok(contexts.some((item) => item.label === 'Shared'));
+  assert.ok(contexts.some((item) => item.value === 'Use managed Postgres.'));
+  assert.ok(!contexts.some((item) => item.label === 'Private'));
+  assert.equal((await store.listProjects())[0].branchCount, 2);
+});
+
+test('stores sandbox run evidence atomically and keeps checkpoint snapshots private', async (t) => {
+  const store = setup(t);
+  let project = await store.createProject({ name: 'Agent evidence', repoPath: 'https://github.com/example/project', brief: 'Supervise a run.' });
+  const run = await store.createAgentRun(project.id, project.branches[0].id, { task: 'Add one test', adapter: 'codex-sandbox' });
+  await store.appendAgentRunEvents(project.id, run.id, [{ kind: 'command', message: 'npm test' }], 1);
+  await store.appendAgentRunEvents(project.id, run.id, [{ kind: 'command', message: 'duplicate' }], 1);
+  await store.updateAgentRun(project.id, run.id, { status: 'completed', files: ['test.js'], summary: 'Done.' });
+  project = await store.createCheckpoint(project.id, 'Known good');
+
+  const loadedRun = await store.getAgentRun(project.id, run.id);
+  assert.deepEqual(loadedRun.events.map((event) => event.message), ['npm test']);
+  assert.deepEqual(loadedRun.files, ['test.js']);
+  assert.equal('snapshot' in project.checkpoints[0], false);
+  assert.equal(JSON.stringify(project).includes('"snapshot"'), false);
+});
+
+test('selectively merges hosted branch findings and restores the prior checkpoint', async (t) => {
+  const store = setup(t);
+  let project = await store.createProject({ name: 'Hosted recovery', brief: 'Merge only reviewed findings.' });
+  const main = project.branches[0];
+  project = await store.createBranch(project.id, { parentId: main.id, name: 'Alternative' });
+  const alternative = project.branches.find((branch) => branch.name === 'Alternative');
+  project = await store.updateBranch(project.id, alternative.id, { status: 'review', output: { changes: [
+    { id: 'accepted', title: 'Accepted', detail: 'Use this.' },
+    { id: 'rejected', title: 'Rejected', detail: 'Leave this behind.' }
+  ] } });
+  const merged = await store.mergeBranch(project.id, alternative.id, main.id, ['accepted']);
+  const checkpoint = merged.checkpoints[0];
+
+  assert.deepEqual(merged.branches.find((branch) => branch.id === main.id).output.changes.map((change) => change.id), ['accepted']);
+  assert.equal(merged.branches.find((branch) => branch.id === alternative.id).status, 'merged');
+  const restored = await store.restoreCheckpoint(project.id, checkpoint.id);
+  assert.equal(restored.branches.find((branch) => branch.id === alternative.id).status, 'review');
+  assert.deepEqual(restored.branches.find((branch) => branch.id === main.id).output.changes, []);
+});

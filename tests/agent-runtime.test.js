@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { buildAgentEnvironment, createAgentRuntime, prepareGitWorktree, summarizeGitWorktree } from '../server/agent-runtime.js';
@@ -71,4 +71,122 @@ test('demo adapter records progress, diff evidence, and human attention', async 
   assert.match(completed.diff, /Leave a small reviewable artifact/);
   assert.ok(completed.events.some((event) => event.kind === 'verification'));
   assert.equal(store.getProject(project.id).attentionItems[0].kind, 'review');
+});
+
+function completedRun(store, project, branchId, worktreePath, change) {
+  const prepared = prepareGitWorktree(project.repoPath, worktreePath, project.integration?.headCommit || 'HEAD');
+  let run = store.createAgentRun(project.id, branchId, { adapter: 'test', task: 'Prepare reviewed changes', worktreePath, baseCommit: prepared.baseCommit });
+  change(worktreePath);
+  const evidence = summarizeGitWorktree(worktreePath, prepared.baseCommit);
+  run = store.updateAgentRun(project.id, run.id, { status: 'completed', ...evidence });
+  return run;
+}
+
+test('integrates selected files on a dedicated branch without touching the active checkout', async (t) => {
+  const { root, repo } = repository(t);
+  writeFileSync(join(repo, 'active-only.txt'), 'uncommitted active checkout work\n');
+  const activeHead = git(repo, 'rev-parse', 'HEAD');
+  const activeStatus = git(repo, 'status', '--porcelain');
+  const database = join(root, 'threadline.db');
+  let store = createStore(database);
+  const runtime = createAgentRuntime(store, { adapter: 'demo', stateRoot: join(root, 'state') });
+  let project = store.createProject({ name: 'Safe integration', repoPath: repo, brief: 'Integrate reviewed files' });
+  const run = completedRun(store, project, project.branches[0].id, join(root, 'run-selected'), (worktree) => {
+    writeFileSync(join(worktree, 'README.md'), '# Integrated\n');
+    writeFileSync(join(worktree, 'accepted.txt'), 'accepted\n');
+    writeFileSync(join(worktree, 'skipped.txt'), 'skip me\n');
+    writeFileSync(join(worktree, 'asset.bin'), Buffer.from([0, 1, 2, 3, 255]));
+  });
+  const result = await runtime.integrate(project.id, run.id, {
+    filePaths: ['README.md', 'accepted.txt', 'asset.bin'],
+    commitMessage: 'Integrate selected files'
+  });
+  assert.match(result.integration.branchName, /^threadline\/safe-integration-/);
+  assert.equal(git(repo, 'show', `${result.integration.commit}:README.md`), '# Integrated');
+  assert.equal(git(repo, 'show', `${result.integration.commit}:accepted.txt`), 'accepted');
+  assert.throws(() => git(repo, 'show', `${result.integration.commit}:skipped.txt`));
+  assert.equal(readFileSync(join(repo, 'README.md'), 'utf8'), '# Fixture\n');
+  assert.equal(git(repo, 'rev-parse', 'HEAD'), activeHead);
+  assert.equal(git(repo, 'status', '--porcelain'), activeStatus);
+  assert.equal(result.project.integration.headCommit, result.integration.commit);
+  assert.equal(result.run.integration.commit, result.integration.commit);
+  const followUp = completedRun(store, result.project, result.project.branches[0].id, join(root, 'run-follow-up'), (worktree) => {
+    assert.equal(readFileSync(join(worktree, 'accepted.txt'), 'utf8'), 'accepted\n');
+    writeFileSync(join(worktree, 'follow-up.txt'), 'continues from accepted code\n');
+  });
+  assert.equal(followUp.baseCommit, result.integration.commit);
+  const repeated = await runtime.integrate(project.id, run.id, { filePaths: ['README.md'] });
+  assert.equal(repeated.integration.commit, result.integration.commit);
+  runtime.shutdown();
+  store.close();
+
+  store = createStore(database);
+  project = store.getProject(project.id);
+  assert.equal(project.integration.headCommit, result.integration.commit);
+  assert.equal(project.agentRuns.find((item) => item.id === run.id).integration.commit, result.integration.commit);
+  store.close();
+});
+
+test('rejects unsafe, stale, and incomplete integration selections', async (t) => {
+  const { root, repo } = repository(t);
+  const store = createStore(':memory:');
+  const runtime = createAgentRuntime(store, { adapter: 'demo', stateRoot: join(root, 'state') });
+  t.after(() => { runtime.shutdown(); store.close(); });
+  const project = store.createProject({ name: 'Validation', repoPath: repo, brief: 'Reject invalid integrations' });
+  const queued = store.createAgentRun(project.id, project.branches[0].id, { adapter: 'test', task: 'Still working', worktreePath: join(root, 'missing') });
+  await assert.rejects(() => runtime.integrate(project.id, queued.id, { filePaths: ['README.md'] }), /completed/);
+  store.updateAgentRun(project.id, queued.id, { status: 'failed' });
+  const run = completedRun(store, project, project.branches[0].id, join(root, 'validation-run'), (worktree) => writeFileSync(join(worktree, 'valid.txt'), 'valid\n'));
+  await assert.rejects(() => runtime.integrate(project.id, run.id, { filePaths: [] }), /at least one/);
+  await assert.rejects(() => runtime.integrate(project.id, run.id, { filePaths: ['../valid.txt'] }), /safe repository-relative/);
+  await assert.rejects(() => runtime.integrate(project.id, run.id, { filePaths: ['not-changed.txt'] }), /no longer match/);
+});
+
+test('three-way integrates non-overlapping parallel runs and supports deletes and renames', async (t) => {
+  const { root, repo } = repository(t);
+  writeFileSync(join(repo, 'delete-me.txt'), 'remove\n');
+  writeFileSync(join(repo, 'rename-me.txt'), 'rename\n');
+  git(repo, 'add', '.');
+  git(repo, 'commit', '-m', 'more fixtures');
+  const store = createStore(':memory:');
+  const runtime = createAgentRuntime(store, { adapter: 'demo', stateRoot: join(root, 'state') });
+  const project = store.createProject({ name: 'Parallel integration', repoPath: repo, brief: 'Combine parallel work' });
+  const first = completedRun(store, project, project.branches[0].id, join(root, 'run-a'), (worktree) => writeFileSync(join(worktree, 'first.txt'), 'first\n'));
+  const secondBranchProject = store.createBranch(project.id, { parentId: project.branches[0].id, name: 'Second' });
+  const secondBranch = secondBranchProject.branches.find((item) => item.name === 'Second');
+  const second = completedRun(store, project, secondBranch.id, join(root, 'run-b'), (worktree) => {
+    rmSync(join(worktree, 'delete-me.txt'));
+    renameSync(join(worktree, 'rename-me.txt'), join(worktree, 'renamed.txt'));
+  });
+  const integratedA = await runtime.integrate(project.id, first.id, { filePaths: first.files, commitMessage: 'First parallel change' });
+  const integratedB = await runtime.integrate(project.id, second.id, { filePaths: second.files, commitMessage: 'Second parallel change' });
+  assert.notEqual(integratedA.integration.commit, integratedB.integration.commit);
+  assert.equal(git(repo, 'show', `${integratedB.integration.commit}:first.txt`), 'first');
+  assert.equal(git(repo, 'show', `${integratedB.integration.commit}:renamed.txt`), 'rename');
+  assert.throws(() => git(repo, 'show', `${integratedB.integration.commit}:delete-me.txt`));
+  assert.throws(() => git(repo, 'show', `${integratedB.integration.commit}:rename-me.txt`));
+  runtime.shutdown();
+  store.close();
+});
+
+test('reports parallel conflicts and restores the dedicated integration workspace', async (t) => {
+  const { root, repo } = repository(t);
+  const store = createStore(':memory:');
+  const runtime = createAgentRuntime(store, { adapter: 'demo', stateRoot: join(root, 'state') });
+  let project = store.createProject({ name: 'Conflict integration', repoPath: repo, brief: 'Protect accepted work' });
+  const first = completedRun(store, project, project.branches[0].id, join(root, 'conflict-a'), (worktree) => writeFileSync(join(worktree, 'README.md'), '# First\n'));
+  project = store.createBranch(project.id, { parentId: project.branches[0].id, name: 'Conflict B' });
+  const secondBranch = project.branches.find((item) => item.name === 'Conflict B');
+  const second = completedRun(store, project, secondBranch.id, join(root, 'conflict-b'), (worktree) => writeFileSync(join(worktree, 'README.md'), '# Second\n'));
+  const accepted = await runtime.integrate(project.id, first.id, { filePaths: ['README.md'] });
+  await assert.rejects(() => runtime.integrate(project.id, second.id, { filePaths: ['README.md'] }), (error) => {
+    assert.equal(error.status, 409);
+    assert.deepEqual(error.details.conflicts, ['README.md']);
+    return true;
+  });
+  assert.equal(git(accepted.project.integration.workspacePath, 'rev-parse', 'HEAD'), accepted.integration.commit);
+  assert.equal(git(accepted.project.integration.workspacePath, 'status', '--porcelain'), '');
+  assert.equal(git(repo, 'show', `${accepted.integration.commit}:README.md`), '# First');
+  runtime.shutdown();
+  store.close();
 });
