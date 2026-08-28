@@ -51,6 +51,7 @@ export const api = {
   controlAgentRun: (projectId, runId, action) => request(`/api/projects/${projectId}/runs/${runId}`, { method: 'PATCH', body: JSON.stringify({ action }) }),
   agentRunEvents: (projectId, runId, after = 0) => request(`/api/projects/${projectId}/runs/${runId}/events?after=${after}`),
   agentRunDiff: (projectId, runId) => request(`/api/projects/${projectId}/runs/${runId}/diff`),
+  integrateAgentRun: (projectId, runId, input) => request(`/api/projects/${projectId}/runs/${runId}/integrate`, { method: 'POST', body: JSON.stringify(input) }),
   resolveAttention: (projectId, itemId) => request(`/api/projects/${projectId}/attention/${itemId}`, { method: 'PATCH', body: JSON.stringify({ status: 'resolved' }) }),
   inheritedContexts: (projectId, branchId) => request(`/api/projects/${projectId}/contexts?branchId=${encodeURIComponent(branchId)}`),
   createContext: (id, input) => request(`/api/projects/${id}/contexts`, { method: 'POST', body: JSON.stringify(input) }),

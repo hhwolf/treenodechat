@@ -93,7 +93,8 @@ export function createSandboxRuntime(store, options = {}) {
       available: missing.length === 0,
       version: model,
       error: missing.length ? `Configure ${missing.join(' and ')}` : '',
-      safety: 'isolated-sandbox'
+      safety: 'isolated-sandbox',
+      supportsIntegration: false
     };
   }
 

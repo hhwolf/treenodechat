@@ -7,9 +7,14 @@ import { createStore } from '../server/store.js';
 async function setup(t, { withAgentRuntime = false } = {}) {
   const store = createStore(':memory:');
   const agentRuntime = withAgentRuntime ? {
-    adapterInfo: () => ({ id: 'test', name: 'Test agent', available: true, version: '1.0' }),
+    adapterInfo: () => ({ id: 'test', name: 'Test agent', available: true, version: '1.0', supportsIntegration: true }),
     start: (projectId, branchId, task) => store.createAgentRun(projectId, branchId, { adapter: 'test', task, worktreePath: '/tmp/test-agent-run' }),
-    control: (projectId, runId, action) => store.updateAgentRun(projectId, runId, { status: action === 'pause' ? 'paused' : action === 'resume' ? 'running' : 'cancelled' })
+    control: (projectId, runId, action) => store.updateAgentRun(projectId, runId, { status: action === 'pause' ? 'paused' : action === 'resume' ? 'running' : 'cancelled' }),
+    integrate: (projectId, runId, input) => {
+      const integration = { branchName: 'threadline/api-project-test', commit: 'abc123', files: input.filePaths, integratedAt: new Date().toISOString() };
+      const run = store.updateAgentRun(projectId, runId, { integration });
+      return { project: store.getProject(projectId), run, integration };
+    }
   } : undefined;
   const handler = createApiHandler(store, { agentRuntime });
   const server = createServer(async (request, response) => {
@@ -170,4 +175,25 @@ test('starts and controls a configured coding agent through the API', async (t) 
   assert.equal(events.payload.events[0].message, 'Inspecting tests.');
   const paused = await request(`/api/projects/${project.id}/runs/${started.payload.run.id}`, { method: 'PATCH', body: JSON.stringify({ action: 'pause' }) });
   assert.equal(paused.payload.run.status, 'paused');
+});
+
+test('integrates reviewed local run files and rejects unsupported runtimes', async (t) => {
+  const local = await setup(t, { withAgentRuntime: true });
+  const project = local.store.createProject({ name: 'Integration API', repoPath: process.cwd(), brief: 'Carry accepted code forward' });
+  const run = local.store.createAgentRun(project.id, project.branches[0].id, { adapter: 'test', task: 'Change two files', worktreePath: '/tmp/test-agent-run' });
+  local.store.updateAgentRun(project.id, run.id, { status: 'completed', files: ['src/a.js', 'src/b.js'] });
+  const integrated = await local.request(`/api/projects/${project.id}/runs/${run.id}/integrate`, {
+    method: 'POST', body: JSON.stringify({ filePaths: ['src/a.js'], commitMessage: 'Accept A' })
+  });
+  assert.equal(integrated.response.status, 200);
+  assert.deepEqual(integrated.payload.integration.files, ['src/a.js']);
+  assert.equal(integrated.payload.run.integration.commit, 'abc123');
+
+  const unsupported = await setup(t);
+  const unsupportedProject = unsupported.store.createProject({ name: 'Hosted-like', brief: 'Review only' });
+  const result = await unsupported.request(`/api/projects/${unsupportedProject.id}/runs/missing/integrate`, {
+    method: 'POST', body: '{}'
+  });
+  assert.equal(result.response.status, 501);
+  assert.match(result.payload.error, /local Threadline/);
 });

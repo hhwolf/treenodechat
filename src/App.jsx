@@ -480,14 +480,47 @@ function MergeModal({ project, source, onClose, onMerge }) {
   const changes = source.output.changes || [];
   const [acceptedIds, setAcceptedIds] = useState(changes.filter((change) => change.selected !== false).map((change) => change.id));
   const toggle = (id) => setAcceptedIds((current) => current.includes(id) ? current.filter((item) => item !== id) : [...current, id]);
-  return <Modal title={`Review ${source.name}`} description={`Choose exactly what crosses into ${target.name}. A rollback checkpoint is created automatically.`} onClose={onClose}>
+  return <Modal title={`Merge findings from ${source.name}`} description={`Choose which summaries cross into ${target.name}. This does not apply agent code; use Integrate selected files on the completed run.`} onClose={onClose}>
     <div className="change-list">
       {changes.length ? changes.map((change) => <label className="change-item" key={change.id}>
         <input type="checkbox" checked={acceptedIds.includes(change.id)} onChange={() => toggle(change.id)} />
         <span><strong>{change.title}</strong><small>{change.detail}</small></span>
       </label>) : <div className="empty-state compact"><strong>No reviewable changes yet</strong><p>Complete branch work before merging it.</p></div>}
     </div>
-    <footer className="modal-footer"><span>{acceptedIds.length} of {changes.length} selected</span><div><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!acceptedIds.length} onClick={() => onMerge({ sourceId: source.id, targetId: target.id, acceptedIds })}>Merge selected</Button></div></footer>
+    <footer className="modal-footer"><span>{acceptedIds.length} of {changes.length} selected</span><div><Button onClick={onClose}>Cancel</Button><Button variant="primary" disabled={!acceptedIds.length} onClick={() => onMerge({ sourceId: source.id, targetId: target.id, acceptedIds })}>Merge selected findings</Button></div></footer>
+  </Modal>;
+}
+
+function projectIntegrationBranch(project) {
+  const projectSlug = String(project.name || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'project';
+  return project.integration?.branchName || `threadline/${projectSlug}-${project.id.slice(0, 6)}`;
+}
+
+function IntegrationModal({ project, run, onClose, onIntegrate }) {
+  const files = run.files || [];
+  const branch = project.branches.find((item) => item.id === run.branchId);
+  const [selected, setSelected] = useState(files);
+  const [commitMessage, setCommitMessage] = useState(`Threadline: accept ${branch?.name || 'agent run'}`);
+  const [integrating, setIntegrating] = useState(false);
+  const [error, setError] = useState('');
+  const toggle = (file) => setSelected((current) => current.includes(file) ? current.filter((item) => item !== file) : [...current, file]);
+  return <Modal title="Integrate agent code" description="Commit selected files to Threadline’s project branch. Your active checkout is never changed." onClose={onClose}>
+    <form className="modal-form integration-form" onSubmit={async (event) => {
+      event.preventDefault();
+      setIntegrating(true);
+      setError('');
+      try { await onIntegrate({ filePaths: selected, commitMessage }); }
+      catch (caught) { setError(caught.message); setIntegrating(false); }
+    }}>
+      <div className="integration-destination"><span>Destination</span><code>{projectIntegrationBranch(project)}</code><small>Future local agents start from the accepted commit.</small></div>
+      <div className="change-list integration-file-list">
+        {files.map((file) => <label className="change-item" key={file}><input type="checkbox" checked={selected.includes(file)} onChange={() => toggle(file)} /><span><strong>{file}</strong><small>Accept the complete file change from this run.</small></span></label>)}
+      </div>
+      <Field label="Commit message" value={commitMessage} required onChange={(event) => setCommitMessage(event.target.value)} />
+      <p className="safety-note"><Icon name="shield" /><span>Changes are applied with Git’s three-way merge inside a dedicated Threadline worktree. Conflicts leave the project branch unchanged.</span></p>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <footer><span className="selection-count">{selected.length} of {files.length} selected</span><div><Button type="button" onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" disabled={integrating || !selected.length || !commitMessage.trim()}>{integrating ? 'Integrating…' : 'Integrate selected files'}</Button></div></footer>
+    </form>
   </Modal>;
 }
 
@@ -556,7 +589,7 @@ function FocusView({ project, onDraft, onResolve, onChallenge, onInspect, onFork
   return <article className="focus-view">
     <div className="view-heading focus-heading"><div><span className="eyebrow">Project focus</span><h1>{project.intent.objective}</h1><p>Review the current frame before committing work to a branch.</p></div><div><Button icon="spark" disabled={drafting} onClick={refresh}>{drafting ? 'Thinking…' : active.length ? 'Refresh focus' : 'Draft focus'}</Button></div></div>
     <section className={`repository-strip ${project.repository?.scannedAt ? 'connected' : ''}`} data-tour="repository">
-      <div><span className="repository-state"><i></i>{project.repository?.scannedAt ? `${project.repository.name} · ${project.repository.branch}` : 'Repository not scanned'}</span><strong>{project.repository?.scannedAt ? `${project.repository.fileCount} tracked files · ${project.repository.changedFiles?.length || 0} local changes` : project.repoPath || 'Add a repository path to ground this project.'}</strong>{project.repository?.scannedAt && <small>Updated {new Date(project.repository.scannedAt).toLocaleString()}</small>}</div>
+      <div><span className="repository-state"><i></i>{project.repository?.scannedAt ? `${project.repository.name} · ${project.repository.branch}` : 'Repository not scanned'}</span><strong>{project.repository?.scannedAt ? `${project.repository.fileCount} tracked files · ${project.repository.changedFiles?.length || 0} local changes` : project.repoPath || 'Add a repository path to ground this project.'}</strong>{project.integration?.headCommit && <small>Accepted code: {project.integration.branchName} · {project.integration.headCommit.slice(0, 8)}</small>}{project.repository?.scannedAt && !project.integration?.headCommit && <small>Updated {new Date(project.repository.scannedAt).toLocaleString()}</small>}</div>
       <div className="repository-actions">{project.repository?.scannedAt && <Button onClick={onConnect}>Change</Button>}<Button onClick={project.repoPath ? scan : onConnect} disabled={scanning}>{scanning ? 'Scanning…' : project.repository?.scannedAt ? 'Refresh repository' : project.repoPath ? 'Scan repository' : 'Connect repository'}</Button></div>
     </section>
     {!active.length ? <section className="focus-empty" data-tour="reasoning-items"><div className="empty-graphic"><Icon name="spark" size={24} /></div><h2>Make the reasoning visible</h2><p>Threadline will draft a few approaches, evidence items, assumptions, and the question that matters most. Nothing is accepted automatically.</p><Button variant="primary" data-tour="challenge" onClick={refresh} disabled={drafting}>{drafting ? 'Drafting…' : 'Draft reasoning focus'}</Button></section> : <>
@@ -597,7 +630,7 @@ function IntentView({ project, onSave, onDraft }) {
 
 const activeRunStatuses = new Set(['queued', 'running', 'paused']);
 
-function AgentRunPanel({ run, adapter, onStart, onControl }) {
+function AgentRunPanel({ run, adapter, onStart, onControl, onIntegrate }) {
   const [expandedDiff, setExpandedDiff] = useState(false);
   if (!run) return <section className="agent-panel agent-empty" data-tour="agent-runs">
     <div className="agent-empty-copy"><span className="agent-mark"><Icon name="terminal" /></span><div><span className="eyebrow">Agent execution</span><h2>Turn this branch into supervised work</h2><p>Codex works in an isolated Git worktree while Threadline keeps progress, evidence, and control visible.</p></div></div>
@@ -614,6 +647,7 @@ function AgentRunPanel({ run, adapter, onStart, onControl }) {
         {canPause && <Button icon="pause" onClick={() => onControl(run, 'pause')}>Pause</Button>}
         {canResume && <Button icon="play" onClick={() => onControl(run, 'resume')}>Resume</Button>}
         {canCancel && <Button icon="stop" onClick={() => onControl(run, 'cancel')}>Cancel run</Button>}
+        {!canCancel && run.status === 'completed' && run.files?.length > 0 && adapter?.supportsIntegration && !run.integration?.commit && <Button variant="primary" icon="check" onClick={() => onIntegrate(run)}>Integrate selected files</Button>}
         {!canCancel && <Button icon="play" onClick={onStart}>Run again</Button>}
       </div>
     </header>
@@ -630,12 +664,14 @@ function AgentRunPanel({ run, adapter, onStart, onControl }) {
       </aside>
     </div>
     {run.summary && <p className="run-summary">{run.summary}</p>}
+    {run.integration?.commit && <div className="integration-result"><Icon name="check" /><div><strong>Integrated into {run.integration.branchName}</strong><p>{run.integration.files.length} file{run.integration.files.length === 1 ? '' : 's'} committed at <code>{run.integration.commit.slice(0, 8)}</code>.</p></div></div>}
+    {!canCancel && run.status === 'completed' && run.files?.length > 0 && !adapter?.supportsIntegration && <p className="hosted-review-note"><Icon name="shield" />Hosted runs remain review-only. Local Threadline can integrate accepted files into a project branch.</p>}
     {expandedDiff && run.diff && <pre className="diff-preview">{run.diff}</pre>}
     {run.worktreePath && <p className="worktree-path"><Icon name="shield" />Isolated at <code>{run.worktreePath}</code></p>}
   </section>;
 }
 
-function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork, onMerge, onAnalyze, onStartAgent, onControlAgent }) {
+function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork, onMerge, onAnalyze, onStartAgent, onControlAgent, onIntegrate }) {
   const [analyzing, setAnalyzing] = useState(false);
   const parent = project.branches.find((item) => item.id === branch.parentId);
   const changes = branch.output.changes || [];
@@ -647,8 +683,8 @@ function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork
       <section className="output-card"><header><div><span className={`status-pill ${branch.status}`}>{branch.status}</span><h2>Current output</h2></div><span className="updated">Updated {new Date(branch.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></header><p>{branch.output.summary || 'This branch has not produced an output yet.'}</p></section>
       <section className="understanding-card"><span className="eyebrow">Shared understanding</span><strong>{contexts.length} context items available</strong><p>{contexts.some((item) => item.sensitivity !== 'shared') ? 'Private context is excluded from agents.' : 'Every listed item is available to this branch.'}</p></section>
     </div>
-    <AgentRunPanel run={latestRun} adapter={adapter} onStart={onStartAgent} onControl={onControlAgent} />
-    <section className="changes-section"><header><div><span className="eyebrow">Reviewable work</span><h2>Proposed changes</h2></div>{branch.parentId && changes.length > 0 && branch.status !== 'merged' && <Button icon="compare" onClick={onMerge}>Compare and merge</Button>}</header>
+    <AgentRunPanel run={latestRun} adapter={adapter} onStart={onStartAgent} onControl={onControlAgent} onIntegrate={onIntegrate} />
+    <section className="changes-section"><header><div><span className="eyebrow">Reviewable findings</span><h2>Proposed findings</h2></div>{branch.parentId && changes.length > 0 && branch.status !== 'merged' && <Button icon="compare" onClick={onMerge}>Compare findings</Button>}</header>
       {changes.length ? <div className="proposed-changes">{changes.map((change) => <div className="proposed-change" key={change.id}><span className="change-mark"><Icon name="check" /></span><div><strong>{change.title}</strong><p>{change.detail}</p>{change.mergedFrom && <small>Merged from another branch</small>}</div></div>)}</div> : <div className="empty-state"><div className="empty-graphic"><Icon name="branch" size={24} /></div><strong>No proposed changes yet</strong><p>Start the branch after its purpose and inherited context look right.</p></div>}
     </section>
   </article>;
@@ -740,6 +776,7 @@ export function App() {
   const [tourStep, setTourStep] = useState(0);
   const [inspectedReasoningId, setInspectedReasoningId] = useState(null);
   const [branchDraft, setBranchDraft] = useState(null);
+  const [integrationRunId, setIntegrationRunId] = useState(null);
   const [health, setHealth] = useState(null);
   const [needsAccess, setNeedsAccess] = useState(false);
 
@@ -888,7 +925,7 @@ export function App() {
     if (selection.type === 'context') return <ContextView project={project} onAdd={() => setModal('context')} />;
     if (selection.type === 'recovery') return <RecoveryView project={project} onCheckpoint={async () => applyProject((await api.createCheckpoint(project.id, `Manual checkpoint ${project.checkpoints.length + 1}`)).project, 'Checkpoint created')} onRestore={async (checkpoint) => applyProject((await api.restoreCheckpoint(project.id, checkpoint.id)).project, `${checkpoint.name} restored`)} />;
     if (selection.type === 'activity') return <ActivityView project={project} />;
-    if (selectedBranch) return <BranchView project={project} branch={selectedBranch} contexts={contexts} runs={project.agentRuns.filter((run) => run.branchId === selectedBranch.id)} adapter={adapter} onUpdate={async (updates) => applyProject((await api.updateBranch(project.id, selectedBranch.id, updates)).project, `${selectedBranch.name} moved to ${updates.status}`)} onFork={() => { setBranchDraft(null); setModal('branch'); }} onMerge={() => setModal('merge')} onAnalyze={async () => { try { const result = await api.analyzeBranch(project.id, selectedBranch.id); applyProject(result.project, result.source === 'model' ? 'Branch analyzed with your configured model' : 'Branch analyzed locally'); } catch (error) { notify(error.message); } }} onStartAgent={() => setModal('agent')} onControlAgent={async (run, action) => { try { const result = await api.controlAgentRun(project.id, run.id, action); applyProject(result.project, action === 'cancel' ? 'Cancellation requested' : `Agent ${action}d`); } catch (error) { notify(error.message); } }} />;
+    if (selectedBranch) return <BranchView project={project} branch={selectedBranch} contexts={contexts} runs={project.agentRuns.filter((run) => run.branchId === selectedBranch.id)} adapter={adapter} onUpdate={async (updates) => applyProject((await api.updateBranch(project.id, selectedBranch.id, updates)).project, `${selectedBranch.name} moved to ${updates.status}`)} onFork={() => { setBranchDraft(null); setModal('branch'); }} onMerge={() => setModal('merge')} onAnalyze={async () => { try { const result = await api.analyzeBranch(project.id, selectedBranch.id); applyProject(result.project, result.source === 'model' ? 'Branch analyzed with your configured model' : 'Branch analyzed locally'); } catch (error) { notify(error.message); } }} onStartAgent={() => setModal('agent')} onControlAgent={async (run, action) => { try { const result = await api.controlAgentRun(project.id, run.id, action); applyProject(result.project, action === 'cancel' ? 'Cancellation requested' : `Agent ${action}d`); } catch (error) { notify(error.message); } }} onIntegrate={(run) => { setIntegrationRunId(run.id); setModal('integrate'); }} />;
     return null;
   };
 
@@ -906,6 +943,7 @@ export function App() {
     {modal === 'repository' && <RepositoryModal project={project} repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onConnect={async (location) => { const result = await api.connectRepository(project.id, location); setModal(null); applyProject(result.project, 'Repository connected and scanned'); }} />}
     {modal === 'branch' && <BranchModal project={project} parentId={selectedBranch?.id || project.branches[0].id} initial={branchDraft} onClose={() => { setModal(null); setBranchDraft(null); }} onCreate={createBranch} />}
     {modal === 'agent' && selectedBranch && <AgentRunModal branch={selectedBranch} adapter={adapter} onClose={() => setModal(null)} onStart={async (task) => { const result = await api.startAgentRun(project.id, selectedBranch.id, task); setModal(null); applyProject(result.project, `${adapter?.name || 'Agent'} started in isolation`); }} />}
+    {modal === 'integrate' && project.agentRuns.find((run) => run.id === integrationRunId) && <IntegrationModal project={project} run={project.agentRuns.find((run) => run.id === integrationRunId)} onClose={() => { setModal(null); setIntegrationRunId(null); }} onIntegrate={async (input) => { const result = await api.integrateAgentRun(project.id, integrationRunId, input); setModal(null); setIntegrationRunId(null); applyProject(result.project, `${input.filePaths.length} file${input.filePaths.length === 1 ? '' : 's'} integrated into ${result.integration.branchName}`); }} />}
     {modal === 'context' && <ContextModal project={project} selectedBranchId={selectedBranch?.id} onClose={() => setModal(null)} onCreate={async (form) => { const result = await api.createContext(project.id, form); setModal(null); applyProject(result.project, `${form.label} added`); }} />}
     {modal === 'merge' && selectedBranch && <MergeModal project={project} source={selectedBranch} onClose={() => setModal(null)} onMerge={async (input) => { const result = await api.merge(project.id, input); setModal(null); applyProject(result.project, `${input.acceptedIds.length} changes merged with a recovery checkpoint`); }} />}
     {toast && <div className="toast" role="status"><Icon name="check" />{toast}</div>}

@@ -21,6 +21,7 @@ It supports two deliberately compatible runtimes:
 - Keep private and restricted context out of agent prompts.
 - Start, pause, resume, cancel, and inspect focused Codex runs.
 - Review event evidence, changed files, diff statistics, patches, and blockers without reading a full transcript.
+- Accept selected files from completed local runs into a persistent project-owned integration branch and workspace.
 - Route completed reviews and failures into a human Attention inbox.
 - Selectively merge accepted Threadline findings with automatic recovery checkpoints.
 - Reveal context, recovery, and activity only when Advanced is opened.
@@ -66,7 +67,9 @@ Exercise the full supervision flow without invoking Codex:
 THREADLINE_AGENT_ADAPTER=demo THREADLINE_EMPTY=1 npm run dev
 ```
 
-Local mode starts real agents with `workspace-write` sandboxing inside a detached worktree created from committed `HEAD`. Uncommitted changes in the active checkout are not copied. Server credentials are removed from the agent environment. Set `CODEX_AGENT_MODEL` only when you need to override the Codex CLI's configured model.
+Local mode starts real agents with `workspace-write` sandboxing inside a detached worktree. The first run starts from committed `HEAD`; after code is accepted, later runs start from the project integration branch's latest commit. Uncommitted changes in the active checkout are not copied. Server credentials are removed from the agent environment. Set `CODEX_AGENT_MODEL` only when you need to override the Codex CLI's configured model.
+
+Completed local runs expose **Integrate selected files**. Threadline recomputes a binary-safe patch from the run's original base and applies the selected whole files with Git's three-way merge onto `threadline/<project>-<id>`. Accepted changes are committed in `.threadline/projects/<project-id>/workspace` with a local Threadline identity. The active checkout's branch, HEAD, index, and dirty files are never changed. Parallel non-conflicting runs can be accepted in either order; conflicts are reported and the dedicated integration workspace is restored to its prior clean commit. Final delivery remains explicit: use the merge command shown after integration when you are ready to bring that branch into your normal checkout.
 
 ## Optional model-assisted reasoning
 
@@ -89,8 +92,9 @@ Model credentials never reach the browser. Repository excerpts and shared contex
 3. Draft the reasoning focus, confirm useful items, and add a counterpoint with **Challenge**.
 4. Fork an approach or open a branch, then select **Run with Codex**.
 5. Follow the event stream and try **Pause**, **Resume**, or **Cancel run**.
-6. Inspect the resulting patch and resolve its **Attention** item.
-7. Selectively merge accepted Threadline findings, then restore a recovery checkpoint.
+6. Inspect the resulting patch. In local mode, choose whole files and select **Integrate selected files**.
+7. Use **Merge findings** separately when you want to carry structured conclusions into another Threadline branch; this does not apply code.
+8. Start another run from the accepted integration head, or use the displayed Git merge command for final delivery.
 
 Run the automated checks with:
 
@@ -123,4 +127,4 @@ See [DESIGN.md](DESIGN.md) for the product model, autonomy boundary, interaction
 
 ## Current boundary
 
-This is a single-workspace product protected by one strong access code, not yet a multi-user account system. Repository scanning and branch analysis are read-only. Agent changes remain isolated and review-only; Threadline never pushes or applies them to a real repository automatically. Billing, team permissions, live collaboration, and autonomous external actions remain out of scope.
+This is a single-workspace product protected by one strong access code, not yet a multi-user account system. Repository scanning and branch analysis are read-only. In local mode, Threadline can commit explicitly selected agent files to a dedicated project integration branch without touching the active checkout. It never pushes or merges that branch into the user's normal branch. Hosted runs remain review-only and cannot publish code yet. Billing, team permissions, live collaboration, and autonomous external actions remain out of scope.

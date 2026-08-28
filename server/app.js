@@ -224,6 +224,17 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         return true;
       }
 
+      const runIntegrateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/runs\/([^/]+)\/integrate$/);
+      if (runIntegrateMatch && request.method === 'POST') {
+        if (!agentRuntime?.integrate) {
+          json(response, 501, { error: 'Code integration is available only in local Threadline' });
+          return true;
+        }
+        const result = await agentRuntime.integrate(runIntegrateMatch[1], runIntegrateMatch[2], await readBody(request));
+        json(response, 200, result);
+        return true;
+      }
+
       const runControlMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/runs\/([^/]+)$/);
       if (runControlMatch && request.method === 'PATCH') {
         if (!agentRuntime) {
@@ -283,8 +294,8 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
       json(response, 404, { error: 'Endpoint not found' });
       return true;
     } catch (error) {
-      const status = error instanceof SyntaxError ? 400 : /not found|does not exist|must be|Choose a repository|Select at least|requires|already|available|active agent|Describe what|Action must|finished|attached|Only a/.test(error.message) ? 422 : 500;
-      json(response, status, { error: error.message });
+      const status = Number(error.status) || (error instanceof SyntaxError ? 400 : /not found|does not exist|must be|Choose a repository|Select at least|requires|already|available|active agent|Describe what|Action must|finished|attached|Only a/.test(error.message) ? 422 : 500);
+      json(response, status, { error: error.message, ...(error.details ? { details: error.details } : {}) });
       return true;
     }
   };

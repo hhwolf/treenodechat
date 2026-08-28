@@ -38,6 +38,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       intent_json TEXT NOT NULL,
       repo_snapshot_json TEXT NOT NULL DEFAULT '{}',
       repo_scanned_at TEXT,
+      integration_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -110,6 +111,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       files_json TEXT NOT NULL DEFAULT '[]',
       diff_stat TEXT NOT NULL DEFAULT '',
       diff_text TEXT NOT NULL DEFAULT '',
+      integration_json TEXT NOT NULL DEFAULT '{}',
       started_at TEXT,
       ended_at TEXT,
       created_at TEXT NOT NULL,
@@ -145,10 +147,12 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
   const projectColumns = new Set(db.prepare('PRAGMA table_info(projects)').all().map((column) => column.name));
   if (!projectColumns.has('repo_snapshot_json')) db.exec("ALTER TABLE projects ADD COLUMN repo_snapshot_json TEXT NOT NULL DEFAULT '{}'");
   if (!projectColumns.has('repo_scanned_at')) db.exec('ALTER TABLE projects ADD COLUMN repo_scanned_at TEXT');
+  if (!projectColumns.has('integration_json')) db.exec("ALTER TABLE projects ADD COLUMN integration_json TEXT NOT NULL DEFAULT '{}'");
   const runColumns = new Set(db.prepare('PRAGMA table_info(agent_runs)').all().map((column) => column.name));
   if (!runColumns.has('sandbox_name')) db.exec('ALTER TABLE agent_runs ADD COLUMN sandbox_name TEXT');
   if (!runColumns.has('command_id')) db.exec('ALTER TABLE agent_runs ADD COLUMN command_id TEXT');
   if (!runColumns.has('event_cursor')) db.exec('ALTER TABLE agent_runs ADD COLUMN event_cursor INTEGER NOT NULL DEFAULT 0');
+  if (!runColumns.has('integration_json')) db.exec("ALTER TABLE agent_runs ADD COLUMN integration_json TEXT NOT NULL DEFAULT '{}'");
 
   const event = (projectId, kind, summary) => {
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?)').run(randomUUID(), projectId, kind, summary, now());
@@ -212,6 +216,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     files: parse(row.files_json, []),
     diffStat: row.diff_stat,
     diff: row.diff_text,
+    integration: parse(row.integration_json, {}),
     startedAt: row.started_at,
     endedAt: row.ended_at,
     createdAt: row.created_at,
@@ -286,6 +291,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       repoPath: row.repo_path,
       intent: parse(row.intent_json, defaultIntent()),
       repository: parse(row.repo_snapshot_json, {}),
+      integration: parse(row.integration_json, {}),
       branches,
       contexts,
       reasoning,
@@ -336,7 +342,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     const status = updates.status ?? current.status;
     const startedAt = updates.startedAt ?? current.started_at ?? (status === 'running' ? timestamp : null);
     const endedAt = updates.endedAt ?? current.ended_at ?? (['completed', 'failed', 'cancelled'].includes(status) ? timestamp : null);
-    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, sandbox_name = ?, command_id = ?, event_cursor = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
+    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, sandbox_name = ?, command_id = ?, event_cursor = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, integration_json = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
       status,
       updates.worktreePath ?? current.worktree_path,
       updates.baseCommit ?? current.base_commit,
@@ -350,6 +356,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       JSON.stringify(updates.files ?? parse(current.files_json, [])),
       updates.diffStat ?? current.diff_stat,
       updates.diff ?? current.diff_text,
+      JSON.stringify(updates.integration ?? parse(current.integration_json, {})),
       startedAt,
       endedAt,
       timestamp,
@@ -438,8 +445,8 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     const id = randomUUID();
     const timestamp = now();
     const projectIntent = { ...defaultIntent(brief), ...(intent || {}) };
-    db.prepare('INSERT INTO projects (id, name, repo_path, intent_json, repo_snapshot_json, repo_scanned_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(
-      id, name || 'Untitled project', repoPath, JSON.stringify(projectIntent), JSON.stringify(repository), repository.scannedAt || null, timestamp, timestamp
+    db.prepare('INSERT INTO projects (id, name, repo_path, intent_json, repo_snapshot_json, repo_scanned_at, integration_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      id, name || 'Untitled project', repoPath, JSON.stringify(projectIntent), JSON.stringify(repository), repository.scannedAt || null, '{}', timestamp, timestamp
     );
     const mainId = randomUUID();
     db.prepare('INSERT INTO branches VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)').run(
@@ -468,16 +475,27 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     return getProject(projectId);
   }
 
-  function updateRepositorySnapshot(projectId, repository) {
-    if (!getProject(projectId)) return null;
-    db.prepare('UPDATE projects SET repo_path = ?, repo_snapshot_json = ?, repo_scanned_at = ?, updated_at = ? WHERE id = ?').run(
-      repository.root,
+  function updateRepositorySnapshot(projectId, repository, { preserveRepoPath = false } = {}) {
+    const project = getProject(projectId);
+    if (!project) return null;
+    db.prepare('UPDATE projects SET repo_path = ?, repo_snapshot_json = ?, repo_scanned_at = ?, integration_json = ?, updated_at = ? WHERE id = ?').run(
+      preserveRepoPath ? project.repoPath : repository.root,
       JSON.stringify(repository),
       repository.scannedAt,
+      preserveRepoPath || project.repoPath === repository.root ? JSON.stringify(project.integration || {}) : '{}',
       now(),
       projectId
     );
     event(projectId, 'repository', `Scanned ${repository.fileCount} tracked files on ${repository.branch}.`);
+    return getProject(projectId);
+  }
+
+  function updateProjectIntegration(projectId, integration) {
+    if (!getProject(projectId)) return null;
+    db.prepare('UPDATE projects SET integration_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(integration || {}), now(), projectId);
+    event(projectId, 'integration', integration?.headCommit
+      ? `Project code advanced on ${integration.branchName} at ${integration.headCommit.slice(0, 8)}.`
+      : 'Project integration workspace initialized.');
     return getProject(projectId);
   }
 
@@ -763,6 +781,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     createProject,
     updateIntent,
     updateRepositorySnapshot,
+    updateProjectIntegration,
     createBranch,
     updateBranch,
     createContext,

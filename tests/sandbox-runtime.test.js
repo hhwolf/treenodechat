@@ -74,7 +74,8 @@ test('reports the exact hosted agent configuration that is missing', async () =>
     available: false,
     version: 'gpt-5.6-sol',
     error: 'Configure OPENAI_API_KEY',
-    safety: 'isolated-sandbox'
+    safety: 'isolated-sandbox',
+    supportsIntegration: false
   });
 });
 

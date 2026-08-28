@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
+import { inspectRepository } from './repository.js';
 
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
 const activeStatuses = new Set(['queued', 'running', 'paused']);
@@ -34,9 +35,66 @@ function git(root, args, { timeout = 20_000 } = {}) {
   return result.stdout.trimEnd();
 }
 
-export function prepareGitWorktree(repoPath, worktreePath) {
+function gitResult(root, args, { timeout = 20_000, input, encoding = 'utf8', env } = {}) {
+  return spawnSync('git', ['-C', root, ...args], {
+    encoding,
+    input,
+    env: env ? { ...process.env, ...env } : process.env,
+    timeout,
+    maxBuffer: 16_000_000
+  });
+}
+
+function nulList(buffer) {
+  return buffer.toString('utf8').split('\0').filter(Boolean);
+}
+
+function changedFiles(worktreePath, baseCommit) {
+  const tracked = gitResult(worktreePath, ['diff', '--name-only', '-z', '--no-renames', baseCommit], { encoding: null });
+  if (tracked.status !== 0) throw new Error(tracked.stderr.toString('utf8').trim() || 'Could not list changed files');
+  const untracked = gitResult(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z'], { encoding: null });
+  if (untracked.status !== 0) throw new Error(untracked.stderr.toString('utf8').trim() || 'Could not list new files');
+  return [...new Set([...nulList(tracked.stdout), ...nulList(untracked.stdout)])].sort();
+}
+
+function safeRelativePath(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 1_000
+    && !value.startsWith('/')
+    && !value.startsWith('\\')
+    && !value.includes('\\')
+    && !value.split('/').some((part) => !part || part === '.' || part === '..');
+}
+
+function slug(value) {
+  return String(value || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'project';
+}
+
+function integrationError(message, status = 422, details) {
+  const error = new Error(message);
+  error.status = status;
+  if (details) error.details = details;
+  return error;
+}
+
+function createSelectedPatch(worktreePath, baseCommit, selectedFiles) {
+  const tracked = gitResult(worktreePath, ['diff', '--binary', '--full-index', '--no-renames', baseCommit, '--', ...selectedFiles], { encoding: null, timeout: 60_000 });
+  if (tracked.status !== 0) throw integrationError(tracked.stderr.toString('utf8').trim() || 'Could not prepare the selected patch');
+  const untracked = new Set(nulList(gitResult(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z'], { encoding: null }).stdout));
+  const chunks = tracked.stdout.length ? [tracked.stdout] : [];
+  for (const file of selectedFiles.filter((item) => untracked.has(item))) {
+    const created = gitResult(worktreePath, ['diff', '--no-index', '--binary', '--', '/dev/null', file], { encoding: null, timeout: 60_000 });
+    if (created.status !== 0 && created.status !== 1) throw integrationError(created.stderr.toString('utf8').trim() || `Could not prepare ${file}`);
+    if (created.stdout.length) chunks.push(created.stdout);
+  }
+  if (!chunks.length) return Buffer.alloc(0);
+  return Buffer.concat(chunks.map((chunk) => Buffer.concat([chunk, Buffer.from('\n')])));
+}
+
+export function prepareGitWorktree(repoPath, worktreePath, baseRef = 'HEAD') {
   const root = git(repoPath, ['rev-parse', '--show-toplevel']);
-  const baseCommit = git(root, ['rev-parse', 'HEAD']);
+  const baseCommit = git(root, ['rev-parse', baseRef]);
   mkdirSync(dirname(worktreePath), { recursive: true });
   git(root, ['worktree', 'add', '--detach', worktreePath, baseCommit], { timeout: 60_000 });
   return { root, baseCommit };
@@ -44,11 +102,8 @@ export function prepareGitWorktree(repoPath, worktreePath) {
 
 export function summarizeGitWorktree(worktreePath, baseCommit) {
   if (!worktreePath || !baseCommit || !existsSync(worktreePath)) return { files: [], diffStat: '', diff: '' };
-  const committedFiles = git(worktreePath, ['diff', '--name-only', baseCommit, 'HEAD']).split('\n').filter(Boolean);
-  const statusLines = git(worktreePath, ['status', '--short']).split('\n').filter(Boolean);
-  const workingFiles = statusLines.map((line) => line.replace(/^\s?\S{1,2}\s+/, '')).filter(Boolean);
-  const untrackedFiles = statusLines.filter((line) => line.startsWith('?? ')).map((line) => line.slice(3));
-  const files = [...new Set([...committedFiles, ...workingFiles])].slice(0, 100);
+  const files = changedFiles(worktreePath, baseCommit).slice(0, 100);
+  const untrackedFiles = nulList(gitResult(worktreePath, ['ls-files', '--others', '--exclude-standard', '-z'], { encoding: null }).stdout).slice(0, 100);
   const trackedStat = git(worktreePath, ['diff', '--stat', baseCommit]);
   const diffStat = [trackedStat, ...untrackedFiles.map((file) => `${file} | new file`)].filter(Boolean).join('\n').slice(0, 8_000);
   const trackedDiff = git(worktreePath, ['diff', '--no-color', '--unified=3', baseCommit]);
@@ -107,6 +162,7 @@ export function createAgentRuntime(store, options = {}) {
   const checkProcess = options.checkProcess || spawnSync;
   const prepareWorktree = options.prepareWorktree || prepareGitWorktree;
   const summarizeWorktree = options.summarizeWorktree || summarizeGitWorktree;
+  const repositoryInspector = options.repositoryInspector || inspectRepository;
   const active = new Map();
   let cachedInfo;
 
@@ -121,7 +177,7 @@ export function createAgentRuntime(store, options = {}) {
   function adapterInfo() {
     if (cachedInfo) return cachedInfo;
     if (adapter === 'demo') {
-      cachedInfo = { id: 'demo', name: 'Demo agent', available: true, version: 'local', safety: 'isolated-worktree' };
+      cachedInfo = { id: 'demo', name: 'Demo agent', available: true, version: 'local', safety: 'isolated-worktree', supportsIntegration: true };
       return cachedInfo;
     }
     const result = checkProcess(command, ['--version'], { encoding: 'utf8', timeout: 5_000 });
@@ -131,7 +187,8 @@ export function createAgentRuntime(store, options = {}) {
       available: result.status === 0,
       version: result.status === 0 ? result.stdout.trim() : '',
       error: result.status === 0 ? '' : (result.stderr?.trim() || 'Codex CLI is not available'),
-      safety: 'workspace-write'
+      safety: 'workspace-write',
+      supportsIntegration: true
     };
     return cachedInfo;
   }
@@ -281,7 +338,7 @@ export function createAgentRuntime(store, options = {}) {
 
   async function execute(project, branch, contexts, run) {
     try {
-      const prepared = prepareWorktree(project.repoPath, run.worktreePath);
+      const prepared = prepareWorktree(project.repoPath, run.worktreePath, project.integration?.headCommit || 'HEAD');
       run = store.updateAgentRun(project.id, run.id, { status: 'running', baseCommit: prepared.baseCommit, worktreePath: run.worktreePath });
       store.addAgentRunEvent(project.id, run.id, 'worktree', `Created isolated worktree from ${prepared.baseCommit.slice(0, 8)}.`);
       if (adapter === 'demo') runDemo(project, branch, run);
@@ -343,6 +400,85 @@ export function createAgentRuntime(store, options = {}) {
     throw new Error('Action must be pause, resume, or cancel');
   }
 
+  async function integrate(projectId, runId, input = {}) {
+    const project = store.getProject(projectId);
+    const run = store.getAgentRun(projectId, runId);
+    if (!project || !run) throw integrationError('Agent run not found', 404);
+    if (run.integration?.commit) return { project, run, integration: run.integration };
+    if (run.status !== 'completed') throw integrationError('Only a completed agent run can be integrated');
+    if (!run.worktreePath || !run.baseCommit || !existsSync(run.worktreePath)) throw integrationError('The isolated agent worktree is no longer available');
+
+    const selectedFiles = [...new Set(Array.isArray(input.filePaths) ? input.filePaths : [])];
+    if (!selectedFiles.length) throw integrationError('Select at least one changed file');
+    if (selectedFiles.some((file) => !safeRelativePath(file))) throw integrationError('Selected files must be safe repository-relative paths');
+    const currentFiles = changedFiles(run.worktreePath, run.baseCommit);
+    const currentSet = new Set(currentFiles);
+    if (selectedFiles.some((file) => !currentSet.has(file))) throw integrationError('Selected files no longer match the agent worktree');
+
+    const branchName = project.integration?.branchName || `threadline/${slug(project.name)}-${project.id.slice(0, 6)}`;
+    const workspacePath = project.integration?.workspacePath || join(stateRoot, 'projects', project.id, 'workspace');
+    const sourceRoot = git(project.repoPath, ['rev-parse', '--show-toplevel']);
+    let branchHead = project.integration?.headCommit || '';
+    const branchCheck = gitResult(sourceRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`]);
+    if (branchCheck.status !== 0) git(sourceRoot, ['branch', branchName, run.baseCommit]);
+    branchHead = git(sourceRoot, ['rev-parse', branchName]);
+
+    if (!existsSync(workspacePath)) {
+      mkdirSync(dirname(workspacePath), { recursive: true });
+      gitResult(sourceRoot, ['worktree', 'prune']);
+      git(sourceRoot, ['worktree', 'add', workspacePath, branchName], { timeout: 60_000 });
+    }
+    const workspaceRoot = git(workspacePath, ['rev-parse', '--show-toplevel']);
+    if (realpathSync(workspaceRoot) !== realpathSync(workspacePath)) throw integrationError('Threadline integration workspace is invalid');
+    const workspaceBranch = git(workspacePath, ['branch', '--show-current']);
+    if (workspaceBranch !== branchName) throw integrationError('Threadline integration workspace is attached to the wrong branch');
+    if (git(workspacePath, ['status', '--porcelain'])) throw integrationError('Threadline integration workspace is not clean');
+    const workspaceHead = git(workspacePath, ['rev-parse', 'HEAD']);
+    if (workspaceHead !== branchHead) throw integrationError('Threadline integration workspace is out of date');
+
+    if (!project.integration?.branchName) {
+      store.updateProjectIntegration(projectId, { branchName, headCommit: branchHead, workspacePath, updatedAt: new Date().toISOString() });
+    }
+
+    const patch = createSelectedPatch(run.worktreePath, run.baseCommit, selectedFiles);
+    if (!patch.length) throw integrationError('Selected files do not contain an applicable change');
+    const applied = gitResult(workspacePath, ['apply', '--3way', '--index', '--binary', '-'], { input: patch, encoding: null, timeout: 60_000 });
+    if (applied.status !== 0) {
+      const conflicts = git(workspacePath, ['diff', '--name-only', '--diff-filter=U']).split('\n').filter(Boolean);
+      git(workspacePath, ['reset', '--hard', branchHead]);
+      git(workspacePath, ['clean', '-fd']);
+      store.addAgentRunEvent(projectId, runId, 'conflict', conflicts.length ? `Integration conflicts in ${conflicts.join(', ')}.` : 'The selected patch could not be applied to the latest project branch.');
+      throw integrationError('Selected changes conflict with the latest project branch', 409, { conflicts });
+    }
+    const staged = gitResult(workspacePath, ['diff', '--cached', '--quiet']);
+    if (staged.status === 0) throw integrationError('Selected changes are already present on the project branch');
+    if (staged.status !== 1) throw integrationError(staged.stderr.trim() || 'Could not verify staged integration changes');
+
+    const branch = project.branches.find((item) => item.id === run.branchId);
+    const commitMessage = String(input.commitMessage || `Threadline: accept ${branch?.name || 'agent run'}`).trim().slice(0, 200);
+    if (!commitMessage) throw integrationError('Commit message is required');
+    const committed = gitResult(workspacePath, ['commit', '-m', commitMessage], {
+      timeout: 60_000,
+      env: {
+        GIT_AUTHOR_NAME: 'Threadline', GIT_AUTHOR_EMAIL: 'threadline@local',
+        GIT_COMMITTER_NAME: 'Threadline', GIT_COMMITTER_EMAIL: 'threadline@local'
+      }
+    });
+    if (committed.status !== 0) {
+      git(workspacePath, ['reset', '--hard', branchHead]);
+      throw integrationError(committed.stderr.trim() || 'Could not commit the integrated changes');
+    }
+    const commit = git(workspacePath, ['rev-parse', 'HEAD']);
+    const integratedAt = new Date().toISOString();
+    const integration = { branchName, commit, files: selectedFiles, integratedAt };
+    store.updateAgentRun(projectId, runId, { integration });
+    store.addAgentRunEvent(projectId, runId, 'integrated', `Integrated ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} as ${commit.slice(0, 8)}.`);
+    store.updateProjectIntegration(projectId, { branchName, headCommit: commit, workspacePath, updatedAt: integratedAt });
+    const snapshot = await repositoryInspector(workspacePath);
+    store.updateRepositorySnapshot(projectId, { ...snapshot, root: project.repoPath, name: basename(project.repoPath), integrationWorkspace: workspacePath }, { preserveRepoPath: true });
+    return { project: store.getProject(projectId), run: store.getAgentRun(projectId, runId), integration };
+  }
+
   function shutdown() {
     for (const entry of active.values()) {
       if (entry.kind === 'process') {
@@ -355,5 +491,5 @@ export function createAgentRuntime(store, options = {}) {
     active.clear();
   }
 
-  return { adapterInfo, start, control, shutdown };
+  return { adapterInfo, start, control, integrate, shutdown };
 }

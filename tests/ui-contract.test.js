@@ -17,7 +17,7 @@ test('keeps the default navigation focused and progressive', () => {
 });
 
 test('includes the core create, fork, compare, merge, and recovery flows', () => {
-  for (const phrase of ['Start a project', 'Create branch', 'Compare and merge', 'Merge selected', 'Create checkpoint', 'Restore']) {
+  for (const phrase of ['Start a project', 'Create branch', 'Compare findings', 'Merge selected findings', 'Create checkpoint', 'Restore']) {
     assert.match(app, new RegExp(phrase));
   }
 });
@@ -78,7 +78,7 @@ test('supports a grounded repository-to-branch workflow', () => {
 });
 
 test('exposes supervised agent execution without crowding the base workflow', () => {
-  for (const phrase of ['Run with', 'isolated Vercel Sandbox', 'Pause', 'Cancel run', 'Attention', 'Mark resolved', 'Inspect diff']) {
+  for (const phrase of ['Run with', 'isolated Vercel Sandbox', 'Pause', 'Cancel run', 'Attention', 'Mark resolved', 'Inspect diff', 'Integrate selected files', 'Hosted runs remain review-only']) {
     assert.match(app, new RegExp(phrase));
   }
   assert.match(app, /data-tour="agent-runs"/);
