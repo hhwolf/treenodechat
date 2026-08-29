@@ -7,8 +7,32 @@ const ACTIVE = new Set(['queued', 'running', 'paused']);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const MAX_TASK_CHARS = 4_000;
 const MAX_DIFF_CHARS = 100_000;
+const MAX_PATCH_CHARS = 5_000_000;
+const MAX_UNTRACKED_PATCH_FILES = 200;
 const DEFAULT_TIMEOUT = 40 * 60 * 1_000;
+const INTEGRATION_TIMEOUT = 10 * 60 * 1_000;
 const refreshes = new Map();
+
+function integrationError(message, status = 422, details) {
+  const error = new Error(message);
+  error.status = status;
+  if (details) error.details = details;
+  return error;
+}
+
+function slug(value) {
+  return String(value || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'project';
+}
+
+function safeRelativePath(value) {
+  return typeof value === 'string'
+    && value.length > 0
+    && value.length <= 1_000
+    && !value.startsWith('/')
+    && !value.startsWith('\\')
+    && !value.includes('\\')
+    && !value.split('/').some((part) => !part || part === '.' || part === '..');
+}
 
 function readableEvent(payload) {
   const kind = payload.type || payload.event || payload.item?.type || 'progress';
@@ -55,8 +79,18 @@ async function commandText(sandbox, cmd, args, cwd) {
   return { exitCode: result.exitCode, stdout: await result.stdout(), stderr: await result.stderr() };
 }
 
-async function summarizeSandbox(sandbox, baseCommit) {
-  const cwd = sandbox.cwd;
+// The sandbox clones the repository into a directory named after it, so the
+// checkout is not `sandbox.cwd` itself. Resolve the real repository root.
+async function resolveRepoDir(sandbox, repoName) {
+  const candidates = [...new Set([`${sandbox.cwd}/${repoName}`, sandbox.cwd, '/vercel/sandbox'])];
+  for (const candidate of candidates) {
+    const result = await commandText(sandbox, 'git', ['-C', candidate, 'rev-parse', '--show-toplevel'], sandbox.cwd);
+    if (result.exitCode === 0 && result.stdout.trim()) return result.stdout.trim();
+  }
+  throw new Error('Could not locate the repository checkout inside the sandbox');
+}
+
+async function summarizeSandbox(sandbox, baseCommit, cwd = sandbox.cwd) {
   const status = await commandText(sandbox, 'git', ['status', '--short', '--untracked-files=all'], cwd);
   const statusLines = status.stdout.split('\n').filter(Boolean);
   const files = [...new Set(statusLines.map((line) => line.slice(3).replace(/^.* -> /, '')).filter(Boolean))].slice(0, 100);
@@ -73,6 +107,24 @@ async function summarizeSandbox(sandbox, baseCommit) {
     diffStat: [stat.stdout.trim(), ...untracked.map((file) => `${file} | new file`)].filter(Boolean).join('\n').slice(0, 8_000),
     diff: [trackedDiff.stdout.trim(), ...untrackedDiffs.map((item) => item.trim())].filter(Boolean).join('\n\n').slice(0, MAX_DIFF_CHARS)
   };
+}
+
+// Git binary patches are base85 text, so the full-fidelity patch survives the
+// sandbox as a string. It is the only durable record once the sandbox expires.
+async function collectSandboxPatch(sandbox, baseCommit, cwd) {
+  const tracked = await commandText(sandbox, 'git', ['diff', '--binary', '--full-index', '--no-renames', baseCommit], cwd);
+  if (tracked.exitCode !== 0) throw new Error(tracked.stderr.trim() || 'Could not capture the run patch');
+  const untracked = await commandText(sandbox, 'git', ['ls-files', '--others', '--exclude-standard'], cwd);
+  const chunks = tracked.stdout.trim() ? [tracked.stdout] : [];
+  for (const file of untracked.stdout.split('\n').filter(Boolean).slice(0, MAX_UNTRACKED_PATCH_FILES)) {
+    const created = await commandText(sandbox, 'git', ['diff', '--no-index', '--binary', '--full-index', '--', '/dev/null', file], cwd);
+    if (created.exitCode !== 0 && created.exitCode !== 1) throw new Error(created.stderr.trim() || `Could not capture ${file}`);
+    if (created.stdout.trim()) chunks.push(created.stdout);
+  }
+  if (!chunks.length) return '';
+  const patch = chunks.map((chunk) => chunk.endsWith('\n') ? chunk : `${chunk}\n`).join('');
+  if (patch.length > MAX_PATCH_CHARS) return null;
+  return patch;
 }
 
 export function createSandboxRuntime(store, options = {}) {
@@ -94,7 +146,7 @@ export function createSandboxRuntime(store, options = {}) {
       version: model,
       error: missing.length ? `Configure ${missing.join(' and ')}` : '',
       safety: 'isolated-sandbox',
-      supportsIntegration: false
+      supportsIntegration: Boolean(githubToken)
     };
   }
 
@@ -141,13 +193,25 @@ export function createSandboxRuntime(store, options = {}) {
         networkPolicy: 'allow-all',
         tags: { product: 'threadline', run: runId.slice(0, 8) }
       });
-      const base = await commandText(sandbox, 'git', ['rev-parse', 'HEAD'], sandbox.cwd);
+      const repoDir = await resolveRepoDir(sandbox, parsed.repo);
+      if (project.integration?.headCommit) {
+        const head = project.integration.headCommit;
+        if (project.integration.branchName) await commandText(sandbox, 'git', ['fetch', 'origin', project.integration.branchName], repoDir);
+        let checkout = await commandText(sandbox, 'git', ['checkout', '--detach', head], repoDir);
+        if (checkout.exitCode !== 0) {
+          await commandText(sandbox, 'git', ['fetch', 'origin', head], repoDir);
+          checkout = await commandText(sandbox, 'git', ['checkout', '--detach', head], repoDir);
+        }
+        if (checkout.exitCode !== 0) throw new Error(`Could not start from the accepted integration commit ${head.slice(0, 8)}`);
+        await store.addAgentRunEvent(projectId, runId, 'worktree', `Starting from accepted integration commit ${head.slice(0, 8)} on ${project.integration.branchName}.`);
+      }
+      const base = await commandText(sandbox, 'git', ['rev-parse', 'HEAD'], repoDir);
       if (base.exitCode !== 0) throw new Error(base.stderr.trim() || 'Sandbox repository checkout failed');
-      const sanitizedRemote = await commandText(sandbox, 'git', ['remote', 'set-url', 'origin', `${parsed.root}.git`], sandbox.cwd);
+      const sanitizedRemote = await commandText(sandbox, 'git', ['remote', 'set-url', 'origin', `${parsed.root}.git`], repoDir);
       if (sanitizedRemote.exitCode !== 0) throw new Error(sanitizedRemote.stderr.trim() || 'Could not sanitize the sandbox Git remote');
-      const codex = await commandText(sandbox, 'codex', ['--version'], sandbox.cwd);
+      const codex = await commandText(sandbox, 'codex', ['--version'], repoDir);
       if (codex.exitCode !== 0) {
-        const install = await commandText(sandbox, 'npm', ['install', '--global', '@openai/codex'], sandbox.cwd);
+        const install = await commandText(sandbox, 'npm', ['install', '--global', '@openai/codex'], repoDir);
         if (install.exitCode !== 0) throw new Error(install.stderr.trim() || 'Could not install Codex in the sandbox');
       }
       await sandbox.mkDir('/vercel/threadline');
@@ -168,12 +232,12 @@ exit "$code"
       ]);
       await sandbox.updateNetworkPolicy({ allow: ['api.openai.com'] });
       const command = await sandbox.runCommand({
-        cmd: 'bash', args: ['/vercel/threadline/run.sh'], cwd: sandbox.cwd, detached: true,
-        env: { OPENAI_API_KEY: openAIKey, THREADLINE_MODEL: model, THREADLINE_REPO: sandbox.cwd, NO_COLOR: '1' }
+        cmd: 'bash', args: ['/vercel/threadline/run.sh'], cwd: repoDir, detached: true,
+        env: { OPENAI_API_KEY: openAIKey, THREADLINE_MODEL: model, THREADLINE_REPO: repoDir, NO_COLOR: '1' }
       });
       run = await store.updateAgentRun(projectId, runId, {
         status: 'running', baseCommit: base.stdout.trim(), sandboxName: sandbox.name, commandId: command.cmdId,
-        sessionId: sandbox.name, worktreePath: sandbox.cwd
+        sessionId: sandbox.name, worktreePath: repoDir
       });
       await store.addAgentRunEvent(projectId, runId, 'started', `Codex started in isolated sandbox ${sandbox.name}.`);
       return run;
@@ -211,7 +275,17 @@ exit "$code"
       if (!TERMINAL.has(state.status)) return run;
       const project = await store.getProject(projectId);
       const branch = project?.branches.find((item) => item.id === run.branchId);
-      const evidence = await summarizeSandbox(sandbox, run.baseCommit || 'HEAD');
+      const repoDir = run.worktreePath || sandbox.cwd;
+      const evidence = await summarizeSandbox(sandbox, run.baseCommit || 'HEAD', repoDir);
+      if (state.status === 'completed' && evidence.files.length && run.baseCommit && store.saveAgentRunPatch) {
+        try {
+          const patch = await collectSandboxPatch(sandbox, run.baseCommit, repoDir);
+          if (patch === null) await store.addAgentRunEvent(projectId, runId, 'warning', 'Run patch is too large to store; this run stays review-only.');
+          else if (patch) await store.saveAgentRunPatch(projectId, runId, patch);
+        } catch (error) {
+          await store.addAgentRunEvent(projectId, runId, 'warning', `Could not capture the run patch: ${error.message}`);
+        }
+      }
       const finalMessage = (await readText(sandbox, '/vercel/threadline/last-message.txt', 20_000)).trim();
       const stderr = (await readText(sandbox, '/vercel/threadline/stderr.log', 20_000)).trim();
       const summary = finalMessage || (state.status === 'completed'
@@ -283,5 +357,76 @@ exit "$code"
     throw new Error('Action must be pause, resume, or cancel');
   }
 
-  return { adapterInfo, start, refresh, refreshProject, control, shutdown: () => {} };
+  async function integrate(projectId, runId, input = {}) {
+    const project = await store.getProject(projectId);
+    const run = await store.getAgentRun(projectId, runId);
+    if (!project || !run) throw integrationError('Agent run not found', 404);
+    if (run.integration?.commit) return { project, run, integration: run.integration };
+    if (run.status !== 'completed') throw integrationError('Only a completed agent run can be integrated');
+    if (!githubToken) throw integrationError('Configure GITHUB_TOKEN with write access to integrate hosted runs');
+    if (!run.baseCommit) throw integrationError('This run has no recorded base commit');
+    const patch = store.getAgentRunPatch ? await store.getAgentRunPatch(projectId, runId) : null;
+    if (!patch) throw integrationError('No stored patch is available for this run; start a new run to integrate its changes');
+    const selectedFiles = [...new Set(Array.isArray(input.filePaths) ? input.filePaths : [])];
+    if (!selectedFiles.length) throw integrationError('Select at least one changed file');
+    if (selectedFiles.some((file) => !safeRelativePath(file))) throw integrationError('Selected files must be safe repository-relative paths');
+    const known = new Set(run.files || []);
+    if (selectedFiles.some((file) => !known.has(file))) throw integrationError('Selected files no longer match the agent run');
+    const branch = project.branches.find((item) => item.id === run.branchId);
+    const commitMessage = String(input.commitMessage || `Threadline: accept ${branch?.name || 'agent run'}`).trim().slice(0, 200);
+    if (!commitMessage) throw integrationError('Commit message is required');
+
+    const parsed = parseGitHubRepository(project.repoPath);
+    const branchName = project.integration?.branchName || `threadline/${slug(project.name)}-${project.id.slice(0, 6)}`;
+    const scrub = (text) => String(text || '').replaceAll(githubToken, '***');
+    let sandbox;
+    try {
+      sandbox = await SandboxClass.create({
+        name: `tl-int-${randomUUID().slice(0, 8)}`,
+        source: { type: 'git', url: `${parsed.root}.git`, depth: 50, username: 'x-access-token', password: githubToken },
+        timeout: INTEGRATION_TIMEOUT,
+        tags: { product: 'threadline', run: runId.slice(0, 8) }
+      });
+      const repoDir = await resolveRepoDir(sandbox, parsed.repo);
+      const git = (args) => commandText(sandbox, 'git', args, repoDir);
+      const hasBase = await git(['cat-file', '-e', `${run.baseCommit}^{commit}`]);
+      if (hasBase.exitCode !== 0) {
+        const fetched = await git(['fetch', 'origin', run.baseCommit]);
+        if (fetched.exitCode !== 0) throw integrationError(`Could not fetch the run base commit ${run.baseCommit.slice(0, 8)} from GitHub`);
+      }
+      const remoteBranch = await git(['fetch', 'origin', `+refs/heads/${branchName}:refs/remotes/origin/${branchName}`]);
+      const checkout = await git(remoteBranch.exitCode === 0
+        ? ['checkout', '-B', branchName, `refs/remotes/origin/${branchName}`]
+        : ['checkout', '-B', branchName, run.baseCommit]);
+      if (checkout.exitCode !== 0) throw integrationError(scrub(checkout.stderr.trim()) || 'Could not prepare the integration branch');
+      await sandbox.mkDir('/vercel/threadline');
+      await sandbox.writeFiles([{ path: '/vercel/threadline/patch.diff', content: Buffer.from(patch) }]);
+      const applied = await git(['apply', '--3way', '--index', '--binary', ...selectedFiles.map((file) => `--include=${file}`), '/vercel/threadline/patch.diff']);
+      if (applied.exitCode !== 0) {
+        const conflicted = await git(['diff', '--name-only', '--diff-filter=U']);
+        const conflicts = conflicted.stdout.split('\n').filter(Boolean);
+        await store.addAgentRunEvent(projectId, runId, 'conflict', conflicts.length ? `Integration conflicts in ${conflicts.join(', ')}.` : 'The selected patch could not be applied to the latest project branch.');
+        throw integrationError('Selected changes conflict with the latest project branch', 409, { conflicts });
+      }
+      const staged = await git(['diff', '--cached', '--quiet']);
+      if (staged.exitCode === 0) throw integrationError('Selected changes are already present on the project branch');
+      const committed = await git(['-c', 'user.name=Threadline', '-c', 'user.email=threadline@cloud', 'commit', '-m', commitMessage]);
+      if (committed.exitCode !== 0) throw integrationError(scrub(committed.stderr.trim()) || 'Could not commit the integrated changes');
+      const authRemote = await git(['remote', 'set-url', 'origin', `https://x-access-token:${githubToken}@github.com/${parsed.owner}/${parsed.repo}.git`]);
+      if (authRemote.exitCode !== 0) throw integrationError('Could not prepare the authenticated push remote');
+      const pushed = await git(['push', 'origin', `${branchName}:refs/heads/${branchName}`]);
+      if (pushed.exitCode !== 0) throw integrationError(`Could not push ${branchName} to GitHub: ${scrub(pushed.stderr.trim()).split('\n').filter(Boolean).pop() || 'push failed'}`);
+      const commit = (await git(['rev-parse', 'HEAD'])).stdout.trim();
+      const integratedAt = new Date().toISOString();
+      const integration = { branchName, commit, files: selectedFiles, integratedAt, pushed: true, remote: parsed.root };
+      await store.updateAgentRun(projectId, runId, { integration });
+      await store.addAgentRunEvent(projectId, runId, 'integrated', `Integrated ${selectedFiles.length} file${selectedFiles.length === 1 ? '' : 's'} as ${commit.slice(0, 8)} and pushed ${branchName} to GitHub.`);
+      if (store.updateProjectIntegration) await store.updateProjectIntegration(projectId, { branchName, headCommit: commit, remote: parsed.root, updatedAt: integratedAt });
+      return { project: await store.getProject(projectId), run: await store.getAgentRun(projectId, runId), integration };
+    } finally {
+      await sandbox?.stop?.().catch(() => {});
+    }
+  }
+
+  return { adapterInfo, start, refresh, refreshProject, control, integrate, shutdown: () => {} };
 }

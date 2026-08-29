@@ -70,6 +70,13 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
       );
       CREATE INDEX IF NOT EXISTS threadline_projects_updated_at
         ON threadline_projects(updated_at DESC);
+      CREATE TABLE IF NOT EXISTS threadline_run_patches (
+        project_id UUID NOT NULL,
+        run_id UUID NOT NULL,
+        patch TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (project_id, run_id)
+      );
     `);
     return initialization;
   };
@@ -407,6 +414,29 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
     return run ? (run.events || []).filter((event) => event.id > (Number(after) || 0)).slice(0, 200) : null;
   }
 
+  async function saveAgentRunPatch(projectId, runId, patch) {
+    await initialize();
+    await pool.query(
+      'INSERT INTO threadline_run_patches (project_id, run_id, patch) VALUES ($1, $2, $3) ON CONFLICT (project_id, run_id) DO UPDATE SET patch = $3',
+      [projectId, runId, patch]
+    );
+  }
+
+  async function getAgentRunPatch(projectId, runId) {
+    await initialize();
+    const result = await pool.query('SELECT patch FROM threadline_run_patches WHERE project_id = $1 AND run_id = $2', [projectId, runId]);
+    return result.rows[0]?.patch || null;
+  }
+
+  async function updateProjectIntegration(projectId, integration) {
+    return mutate(projectId, (project) => {
+      project.integration = integration || {};
+      addEvent(project, 'integration', integration?.headCommit
+        ? `Project code advanced on ${integration.branchName} at ${integration.headCommit.slice(0, 8)}.`
+        : 'Project integration branch initialized.');
+    });
+  }
+
   async function createAttentionItem(projectId, input) {
     let item;
     await mutate(projectId, (project) => {
@@ -441,6 +471,7 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
     replaceReasoningProposals, resolveReasoningItem, addReasoningChallenge,
     createCheckpoint, restoreCheckpoint, mergeBranch,
     createAgentRun, getAgentRun, updateAgentRun, addAgentRunEvent, appendAgentRunEvents, listAgentRunEvents,
+    saveAgentRunPatch, getAgentRunPatch, updateProjectIntegration,
     createAttentionItem, resolveAttentionItem,
     recoverInterruptedRuns: async () => 0,
     seedDemo: async () => {}

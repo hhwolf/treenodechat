@@ -512,7 +512,7 @@ function IntegrationModal({ project, run, onClose, onIntegrate }) {
       try { await onIntegrate({ filePaths: selected, commitMessage }); }
       catch (caught) { setError(caught.message); setIntegrating(false); }
     }}>
-      <div className="integration-destination"><span>Destination</span><code>{projectIntegrationBranch(project)}</code><small>Future local agents start from the accepted commit.</small></div>
+      <div className="integration-destination"><span>Destination</span><code>{projectIntegrationBranch(project)}</code><small>Future agent runs start from the accepted commit.</small></div>
       <div className="change-list integration-file-list">
         {files.map((file) => <label className="change-item" key={file}><input type="checkbox" checked={selected.includes(file)} onChange={() => toggle(file)} /><span><strong>{file}</strong><small>Accept the complete file change from this run.</small></span></label>)}
       </div>
@@ -668,9 +668,11 @@ function AgentRunPanel({ run, adapter, projectIntegration, onStart, onControl, o
       <strong>Integrated into {run.integration.branchName}</strong>
       <p>{run.integration.files.length} file{run.integration.files.length === 1 ? '' : 's'} committed at <code>{run.integration.commit}</code>.</p>
       {projectIntegration?.workspacePath && <p>Threadline workspace: <code>{projectIntegration.workspacePath}</code></p>}
-      <p>When final review is complete, run <code>git merge {run.integration.branchName}</code> from your normal checkout.</p>
+      {run.integration.pushed
+        ? <p>Pushed to <a href={`${run.integration.remote}/tree/${run.integration.branchName}`} target="_blank" rel="noreferrer">{run.integration.branchName} on GitHub</a>. Open a pull request into your default branch when final review is complete.</p>
+        : <p>When final review is complete, run <code>git merge {run.integration.branchName}</code> from your normal checkout.</p>}
     </div></div>}
-    {!canCancel && run.status === 'completed' && run.files?.length > 0 && !adapter?.supportsIntegration && <p className="hosted-review-note"><Icon name="shield" />Hosted runs remain review-only. Local Threadline can integrate accepted files into a project branch.</p>}
+    {!canCancel && run.status === 'completed' && run.files?.length > 0 && !adapter?.supportsIntegration && <p className="hosted-review-note"><Icon name="shield" />Hosted runs remain review-only without a GitHub token that can push. Configure GITHUB_TOKEN with write access to integrate accepted files.</p>}
     {expandedDiff && run.diff && <pre className="diff-preview">{run.diff}</pre>}
     {run.worktreePath && <p className="worktree-path"><Icon name="shield" />Isolated at <code>{run.worktreePath}</code></p>}
   </section>;
