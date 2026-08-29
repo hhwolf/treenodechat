@@ -227,7 +227,7 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
       const runIntegrateMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/runs\/([^/]+)\/integrate$/);
       if (runIntegrateMatch && request.method === 'POST') {
         if (!agentRuntime?.integrate) {
-          json(response, 501, { error: 'Code integration is available only in local Threadline' });
+          json(response, 501, { error: 'Code integration is not supported by the configured agent runtime' });
           return true;
         }
         const result = await agentRuntime.integrate(runIntegrateMatch[1], runIntegrateMatch[2], await readBody(request));

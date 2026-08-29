@@ -24,7 +24,7 @@ class FakeSandbox {
   constructor(options) {
     this.options = options;
     this.name = options.name;
-    this.cwd = '/vercel/sandbox';
+    this.cwd = '/vercel';
     this.files = [];
     this.policies = [];
     this.commands = [];
@@ -36,11 +36,26 @@ class FakeSandbox {
     if (typeof command === 'object') {
       this.commands.push(command);
       if (!command.detached) {
-        if (command.cmd === 'git' && command.args[0] === 'rev-parse') return finished('abc123\n');
-        if (command.cmd === 'git' && command.args[0] === 'status' && this.completed) return finished(' M src/app.js\n?? tests/new.test.js\n');
-        if (command.cmd === 'git' && command.args.includes('--stat')) return finished('src/app.js | 2 +-\n');
-        if (command.cmd === 'git' && command.args.includes('--no-color')) return finished('diff --git a/src/app.js b/src/app.js\n+review me\n', '', 1);
-        if (command.cmd === 'codex' && command.args[0] === '--version') return finished('codex 1.0\n');
+        const args = command.args;
+        if (command.cmd === 'git' && args[0] === '-C') {
+          return args[1] === '/vercel/project'
+            ? finished('/vercel/project\n')
+            : finished('', 'fatal: not a git repository (or any of the parent directories): .git', 128);
+        }
+        if (command.cmd === 'git' && args[0] === 'apply') {
+          return FakeSandbox.applyExitCode ? finished('', 'error: patch failed: src/app.js', FakeSandbox.applyExitCode) : finished();
+        }
+        if (command.cmd === 'git' && args.includes('--diff-filter=U')) return finished(FakeSandbox.applyExitCode ? 'src/app.js\n' : '');
+        if (command.cmd === 'git' && args.includes('--cached')) return finished('', '', 1);
+        if (command.cmd === 'git' && args.includes('commit')) { this.committed = true; return finished(); }
+        if (command.cmd === 'git' && args[0] === 'rev-parse') return finished(this.committed ? 'def456\n' : 'abc123\n');
+        if (command.cmd === 'git' && args[0] === 'status' && this.completed) return finished(' M src/app.js\n?? tests/new.test.js\n');
+        if (command.cmd === 'git' && args[0] === 'ls-files') return finished(this.completed ? 'tests/new.test.js\n' : '');
+        if (command.cmd === 'git' && args.includes('--stat')) return finished('src/app.js | 2 +-\n');
+        if (command.cmd === 'git' && args.includes('--no-renames') && args.includes('--binary')) return finished('diff --git a/src/app.js b/src/app.js\n+binary-safe tracked patch\n');
+        if (command.cmd === 'git' && args.includes('--no-index') && args.includes('--binary')) return finished('diff --git a/tests/new.test.js b/tests/new.test.js\nnew file mode 100644\n', '', 1);
+        if (command.cmd === 'git' && args.includes('--no-color')) return finished('diff --git a/src/app.js b/src/app.js\n+review me\n', '', 1);
+        if (command.cmd === 'codex' && args[0] === '--version') return finished('codex 1.0\n');
         return finished();
       }
       this.detachedCommand = command;
@@ -59,6 +74,7 @@ class FakeSandbox {
 
 function setup(t) {
   FakeSandbox.created = [];
+  FakeSandbox.applyExitCode = 0;
   const database = newDb();
   const { Pool } = database.adapters.createPg();
   const store = createCloudStore('', { pool: new Pool() });
@@ -110,6 +126,9 @@ test('starts Codex in a persistent Git sandbox with shared context and restricte
   assert.equal(sandbox.detachedCommand.detached, true);
   assert.equal(sandbox.detachedCommand.env.OPENAI_API_KEY, 'openai-secret');
   assert.equal(sandbox.detachedCommand.env.THREADLINE_MODEL, 'gpt-5.6-sol');
+  assert.equal(run.worktreePath, '/vercel/project');
+  assert.equal(sandbox.detachedCommand.cwd, '/vercel/project');
+  assert.equal(sandbox.detachedCommand.env.THREADLINE_REPO, '/vercel/project');
 });
 
 test('pauses, resumes, and collects terminal Sandbox evidence for human review', async (t) => {
@@ -141,4 +160,87 @@ test('pauses, resumes, and collects terminal Sandbox evidence for human review',
   assert.equal(updated.branches[0].status, 'review');
   assert.equal(updated.attentionItems[0].kind, 'review');
   assert.equal(sandbox.stopped, true);
+
+  const patch = await store.getAgentRunPatch(project.id, started.id);
+  assert.match(patch, /binary-safe tracked patch/);
+  assert.match(patch, /new file mode 100644/);
+});
+
+async function setupCompletedHostedRun(t, name) {
+  const store = setup(t);
+  const project = await store.createProject({ name, repoPath: 'https://github.com/example/project', brief: 'Ship accepted code.' });
+  const runtime = createSandboxRuntime(store, {
+    SandboxClass: FakeSandbox,
+    openAIKey: 'openai-secret',
+    githubToken: 'github-write-token',
+    allowWithoutVercelAuth: true
+  });
+  const started = await runtime.start(project.id, project.branches[0].id, 'Change two files.');
+  const sandbox = FakeSandbox.created[0];
+  sandbox.completed = true;
+  sandbox.contents.set('/vercel/threadline/status.json', '{"status":"completed","exitCode":0}');
+  await runtime.refresh(project.id, started.id);
+  return { store, runtime, project, runId: started.id };
+}
+
+test('integrates selected hosted files onto a pushed GitHub project branch', async (t) => {
+  const { store, runtime, project, runId } = await setupCompletedHostedRun(t, 'Hosted Integration');
+  assert.equal((await runtime.adapterInfo()).supportsIntegration, true);
+
+  const result = await runtime.integrate(project.id, runId, { filePaths: ['src/app.js'], commitMessage: 'Accept hosted change' });
+  const integrationSandbox = FakeSandbox.created[1];
+
+  assert.equal(result.integration.pushed, true);
+  assert.equal(result.integration.commit, 'def456');
+  assert.equal(result.integration.branchName, `threadline/hosted-integration-${project.id.slice(0, 6)}`);
+  assert.deepEqual(result.integration.files, ['src/app.js']);
+  assert.deepEqual(integrationSandbox.options.source, {
+    type: 'git', url: 'https://github.com/example/project.git', depth: 50,
+    username: 'x-access-token', password: 'github-write-token'
+  });
+  assert.ok(integrationSandbox.files.some((file) => file.path === '/vercel/threadline/patch.diff' && /binary-safe tracked patch/.test(file.content.toString('utf8'))));
+  assert.ok(integrationSandbox.commands.some((command) => command.cmd === 'git' && command.args[0] === 'apply'
+    && command.args.includes('--3way') && command.args.includes('--include=src/app.js')));
+  assert.ok(integrationSandbox.commands.some((command) => command.cmd === 'git' && command.args.includes('commit') && command.args.includes('Accept hosted change')));
+  assert.ok(integrationSandbox.commands.some((command) => command.cmd === 'git' && command.args[0] === 'push'));
+  assert.equal(integrationSandbox.stopped, true);
+
+  const updated = await store.getProject(project.id);
+  assert.equal(updated.integration.headCommit, 'def456');
+  assert.equal(updated.integration.branchName, result.integration.branchName);
+  const run = await store.getAgentRun(project.id, runId);
+  assert.ok(run.events.some((event) => event.kind === 'integrated'));
+
+  const retry = await runtime.integrate(project.id, runId, { filePaths: ['src/app.js'] });
+  assert.equal(retry.integration.commit, 'def456');
+  assert.equal(FakeSandbox.created.length, 2);
+
+  const next = await runtime.start(project.id, project.branches[0].id, 'Continue from accepted code.');
+  const nextSandbox = FakeSandbox.created[2];
+  assert.ok(nextSandbox.commands.some((command) => command.cmd === 'git' && command.args.join(' ') === 'checkout --detach def456'));
+  assert.equal(next.status, 'running');
+});
+
+test('reports hosted integration conflicts without recording an integration', async (t) => {
+  const { store, runtime, project, runId } = await setupCompletedHostedRun(t, 'Hosted Conflict');
+  FakeSandbox.applyExitCode = 1;
+
+  await assert.rejects(
+    runtime.integrate(project.id, runId, { filePaths: ['src/app.js'] }),
+    (error) => error.status === 409 && error.details.conflicts.includes('src/app.js')
+  );
+  const run = await store.getAgentRun(project.id, runId);
+  assert.equal(run.integration?.commit, undefined);
+  assert.ok(run.events.some((event) => event.kind === 'conflict'));
+  assert.equal(FakeSandbox.created[1].stopped, true);
+});
+
+test('keeps hosted runs review-only when the stored patch or token is missing', async (t) => {
+  const { store, runtime, project, runId } = await setupCompletedHostedRun(t, 'Hosted Guardrails');
+  await assert.rejects(runtime.integrate(project.id, runId, { filePaths: ['../escape.js'] }), /safe repository-relative/);
+  await assert.rejects(runtime.integrate(project.id, runId, { filePaths: ['docs/unknown.md'] }), /no longer match/);
+
+  const reviewOnly = createSandboxRuntime(store, { SandboxClass: FakeSandbox, openAIKey: 'openai-secret', githubToken: '', allowWithoutVercelAuth: true });
+  assert.equal((await reviewOnly.adapterInfo()).supportsIntegration, false);
+  await assert.rejects(reviewOnly.integrate(project.id, runId, { filePaths: ['src/app.js'] }), /GITHUB_TOKEN/);
 });

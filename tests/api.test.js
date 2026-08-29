@@ -195,5 +195,5 @@ test('integrates reviewed local run files and rejects unsupported runtimes', asy
     method: 'POST', body: '{}'
   });
   assert.equal(result.response.status, 501);
-  assert.match(result.payload.error, /local Threadline/);
+  assert.match(result.payload.error, /not supported by the configured agent runtime/);
 });
