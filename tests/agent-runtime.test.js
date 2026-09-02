@@ -224,3 +224,26 @@ test('verifies a completed run in its worktree from the parent process', async (
 
   assert.throws(() => runtime.verify(project.id, run.id, { command: '' }), /verify command/);
 });
+
+test('commits a rules document onto the integration branch without touching the checkout', async (t) => {
+  const { root, repo } = repository(t);
+  const store = createStore(':memory:');
+  const runtime = createAgentRuntime(store, { adapter: 'demo', stateRoot: join(root, 'state') });
+  t.after(() => { runtime.shutdown(); store.close(); });
+  let project = store.createProject({ name: 'Rules commit', repoPath: repo, brief: 'Sync the project rules' });
+  const doc = project.documents[0];
+  const activeHead = git(repo, 'rev-parse', 'HEAD');
+
+  const result = runtime.commitDocument(project.id, doc.id, { message: 'Sync CLAUDE.md' });
+  assert.equal(result.commit.path, 'CLAUDE.md');
+  project = store.getProject(project.id);
+  assert.equal(project.documents[0].committedSha, result.commit.sha);
+  assert.equal(project.documents[0].committedBranch, result.commit.branch);
+  assert.equal(project.integration.headCommit, result.commit.sha);
+  assert.match(git(repo, 'show', `${result.commit.branch}:CLAUDE.md`), /Rules commit/);
+  assert.equal(git(repo, 'rev-parse', 'HEAD'), activeHead);
+  assert.equal(existsSync(join(repo, 'CLAUDE.md')), false);
+
+  const again = runtime.commitDocument(project.id, doc.id, {});
+  assert.equal(again.commit.sha, result.commit.sha);
+});

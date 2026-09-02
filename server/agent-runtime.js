@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
 import { detectVerifyCommand, inspectRepository } from './repository.js';
+import { formatRulesSection } from './documents.js';
 
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
 const activeStatuses = new Set(['queued', 'running', 'paused']);
@@ -121,6 +122,7 @@ export function summarizeGitWorktree(worktreePath, baseCommit) {
 
 function buildAgentPrompt(project, branch, contexts, task) {
   const sharedContext = contexts.map((item) => `- ${item.label}: ${item.value}`).join('\n') || '- No additional shared context.';
+  const rules = formatRulesSection(project.documents, 4_000);
   return `You are a coding agent working in an isolated Git worktree managed by Threadline.
 
 Project objective: ${project.intent.objective}
@@ -134,7 +136,7 @@ Assigned task: ${task}
 
 Shared context:
 ${sharedContext}
-
+${rules ? `\n${rules}\n` : ''}
 Operating rules:
 - Work only inside the current isolated worktree.
 - Do not push, change Git remotes, or modify Git configuration.
@@ -400,28 +402,13 @@ export function createAgentRuntime(store, options = {}) {
     throw new Error('Action must be pause, resume, or cancel');
   }
 
-  async function integrate(projectId, runId, input = {}) {
-    const project = store.getProject(projectId);
-    const run = store.getAgentRun(projectId, runId);
-    if (!project || !run) throw integrationError('Agent run not found', 404);
-    if (run.integration?.commit) return { project, run, integration: run.integration };
-    if (run.status !== 'completed') throw integrationError('Only a completed agent run can be integrated');
-    if (!run.worktreePath || !run.baseCommit || !existsSync(run.worktreePath)) throw integrationError('The isolated agent worktree is no longer available');
-
-    const selectedFiles = [...new Set(Array.isArray(input.filePaths) ? input.filePaths : [])];
-    if (!selectedFiles.length) throw integrationError('Select at least one changed file');
-    if (selectedFiles.some((file) => !safeRelativePath(file))) throw integrationError('Selected files must be safe repository-relative paths');
-    const currentFiles = changedFiles(run.worktreePath, run.baseCommit);
-    const currentSet = new Set(currentFiles);
-    if (selectedFiles.some((file) => !currentSet.has(file))) throw integrationError('Selected files no longer match the agent worktree');
-
+  function ensureIntegrationWorkspace(project, baseRef = 'HEAD') {
     const branchName = project.integration?.branchName || `threadline/${slug(project.name)}-${project.id.slice(0, 6)}`;
     const workspacePath = project.integration?.workspacePath || join(stateRoot, 'projects', project.id, 'workspace');
     const sourceRoot = git(project.repoPath, ['rev-parse', '--show-toplevel']);
-    let branchHead = project.integration?.headCommit || '';
     const branchCheck = gitResult(sourceRoot, ['show-ref', '--verify', '--quiet', `refs/heads/${branchName}`]);
-    if (branchCheck.status !== 0) git(sourceRoot, ['branch', branchName, run.baseCommit]);
-    branchHead = git(sourceRoot, ['rev-parse', branchName]);
+    if (branchCheck.status !== 0) git(sourceRoot, ['branch', branchName, git(sourceRoot, ['rev-parse', baseRef])]);
+    const branchHead = git(sourceRoot, ['rev-parse', branchName]);
 
     if (!existsSync(workspacePath)) {
       mkdirSync(dirname(workspacePath), { recursive: true });
@@ -437,8 +424,61 @@ export function createAgentRuntime(store, options = {}) {
     if (workspaceHead !== branchHead) throw integrationError('Threadline integration workspace is out of date');
 
     if (!project.integration?.branchName) {
-      store.updateProjectIntegration(projectId, { branchName, headCommit: branchHead, workspacePath, updatedAt: new Date().toISOString() });
+      store.updateProjectIntegration(project.id, { branchName, headCommit: branchHead, workspacePath, updatedAt: new Date().toISOString() });
     }
+    return { branchName, workspacePath, branchHead };
+  }
+
+  function commitDocument(projectId, docId, input = {}) {
+    const project = store.getProject(projectId);
+    const document = project?.documents?.find((item) => item.id === docId);
+    if (!project || !document) throw integrationError('Document not found', 404);
+    if (!project.repoPath) throw integrationError('Connect a repository before committing rules');
+    const { branchName, workspacePath, branchHead } = ensureIntegrationWorkspace(project);
+    const target = join(workspacePath, document.name);
+    mkdirSync(dirname(target), { recursive: true });
+    writeFileSync(target, document.content || '');
+    const added = gitResult(workspacePath, ['add', '--', document.name]);
+    if (added.status !== 0) throw integrationError(added.stderr.trim() || `Could not stage ${document.name}`);
+    const staged = gitResult(workspacePath, ['diff', '--cached', '--quiet']);
+    let commit = branchHead;
+    if (staged.status === 1) {
+      const message = String(input.message || `Threadline: update ${document.name}`).trim().slice(0, 200);
+      const committed = gitResult(workspacePath, ['commit', '-m', message], {
+        env: {
+          GIT_AUTHOR_NAME: 'Threadline', GIT_AUTHOR_EMAIL: 'threadline@local',
+          GIT_COMMITTER_NAME: 'Threadline', GIT_COMMITTER_EMAIL: 'threadline@local'
+        }
+      });
+      if (committed.status !== 0) {
+        git(workspacePath, ['reset', '--hard', branchHead]);
+        throw integrationError(committed.stderr.trim() || 'Could not commit the rules document');
+      }
+      commit = git(workspacePath, ['rev-parse', 'HEAD']);
+      store.updateProjectIntegration(projectId, { branchName, headCommit: commit, workspacePath, updatedAt: new Date().toISOString() });
+    } else if (staged.status !== 0) {
+      throw integrationError('Could not verify staged rules changes');
+    }
+    store.updateDocument(projectId, docId, { committedAt: new Date().toISOString(), committedSha: commit, committedBranch: branchName });
+    return { project: store.getProject(projectId), commit: { sha: commit, branch: branchName, path: document.name } };
+  }
+
+  async function integrate(projectId, runId, input = {}) {
+    const project = store.getProject(projectId);
+    const run = store.getAgentRun(projectId, runId);
+    if (!project || !run) throw integrationError('Agent run not found', 404);
+    if (run.integration?.commit) return { project, run, integration: run.integration };
+    if (run.status !== 'completed') throw integrationError('Only a completed agent run can be integrated');
+    if (!run.worktreePath || !run.baseCommit || !existsSync(run.worktreePath)) throw integrationError('The isolated agent worktree is no longer available');
+
+    const selectedFiles = [...new Set(Array.isArray(input.filePaths) ? input.filePaths : [])];
+    if (!selectedFiles.length) throw integrationError('Select at least one changed file');
+    if (selectedFiles.some((file) => !safeRelativePath(file))) throw integrationError('Selected files must be safe repository-relative paths');
+    const currentFiles = changedFiles(run.worktreePath, run.baseCommit);
+    const currentSet = new Set(currentFiles);
+    if (selectedFiles.some((file) => !currentSet.has(file))) throw integrationError('Selected files no longer match the agent worktree');
+
+    const { branchName, workspacePath, branchHead } = ensureIntegrationWorkspace(project, run.baseCommit);
 
     const patch = createSelectedPatch(run.worktreePath, run.baseCommit, selectedFiles);
     if (!patch.length) throw integrationError('Selected files do not contain an applicable change');
@@ -538,5 +578,5 @@ export function createAgentRuntime(store, options = {}) {
     active.clear();
   }
 
-  return { adapterInfo, start, control, integrate, verify, shutdown };
+  return { adapterInfo, start, control, integrate, verify, commitDocument, shutdown };
 }

@@ -19,6 +19,11 @@ async function setup(t, { withAgentRuntime = false } = {}) {
       const run = store.getAgentRun(projectId, runId);
       if (!run) throw Object.assign(new Error('Agent run not found'), { status: 404 });
       return store.updateAgentRun(projectId, runId, { verification: { command: input.command || 'npm test', status: 'running', mode: 'worktree' } });
+    },
+    commitDocument: (projectId, docId) => {
+      const project = store.updateDocument(projectId, docId, { committedAt: new Date().toISOString(), committedSha: 'sha-doc', committedBranch: 'threadline/test' });
+      if (!project) throw Object.assign(new Error('Document not found'), { status: 404 });
+      return { project, commit: { sha: 'sha-doc', branch: 'threadline/test', path: 'CLAUDE.md' } };
     }
   } : undefined;
   const handler = createApiHandler(store, { agentRuntime });
@@ -257,4 +262,35 @@ test('verifies a completed run and stores the project verify command', async (t)
   const result = await unsupported.request(`/api/projects/${bareProject.id}/runs/missing/verify`, { method: 'POST', body: '{}' });
   assert.equal(result.response.status, 501);
   assert.match(result.payload.error, /not supported by the configured agent runtime/);
+});
+
+test('manages rules documents through the API', async (t) => {
+  const { store, request } = await setup(t, { withAgentRuntime: true });
+  const project = store.createProject({ name: 'Rules API', brief: 'One home for the rules' });
+  assert.equal(project.documents[0].name, 'CLAUDE.md');
+
+  const created = await request(`/api/projects/${project.id}/documents`, { method: 'POST', body: JSON.stringify({ name: 'skills/research.md', content: 'Cite sources.' }) });
+  assert.equal(created.response.status, 201);
+  assert.equal(created.payload.project.documents.length, 2);
+  const doc = created.payload.project.documents.find((item) => item.name === 'skills/research.md');
+
+  const updated = await request(`/api/projects/${project.id}/documents/${doc.id}`, { method: 'PATCH', body: JSON.stringify({ content: 'Cite everything.' }) });
+  assert.equal(updated.payload.project.documents.find((item) => item.id === doc.id).content, 'Cite everything.');
+
+  const committed = await request(`/api/projects/${project.id}/documents/${doc.id}/commit`, { method: 'POST', body: '{}' });
+  assert.equal(committed.response.status, 200);
+  assert.equal(committed.payload.commit.sha, 'sha-doc');
+  assert.equal(committed.payload.project.documents.find((item) => item.id === doc.id).committedSha, 'sha-doc');
+
+  const removed = await request(`/api/projects/${project.id}/documents/${doc.id}`, { method: 'DELETE' });
+  assert.equal(removed.response.status, 200);
+  assert.equal(removed.payload.project.documents.length, 1);
+
+  const invalid = await request(`/api/projects/${project.id}/documents`, { method: 'POST', body: JSON.stringify({ name: '../escape.md' }) });
+  assert.equal(invalid.response.status, 422);
+
+  const bare = await setup(t);
+  const bareProject = bare.store.createProject({ name: 'No runtime', brief: 'x' });
+  const blocked = await bare.request(`/api/projects/${bareProject.id}/documents/${bareProject.documents[0].id}/commit`, { method: 'POST', body: '{}' });
+  assert.equal(blocked.response.status, 501);
 });

@@ -33,7 +33,7 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
     if (!url.pathname.startsWith('/api/')) return false;
 
     try {
-      if (request.method === 'POST' || request.method === 'PATCH') {
+      if (['POST', 'PATCH', 'DELETE'].includes(request.method)) {
         const origin = request.headers.origin;
         if (origin) {
           let hostname = '';
@@ -44,7 +44,7 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
             return true;
           }
         }
-        if (!request.headers['content-type']?.startsWith('application/json')) {
+        if (request.method !== 'DELETE' && !request.headers['content-type']?.startsWith('application/json')) {
           json(response, 415, { error: 'Changes require application/json' });
           return true;
         }
@@ -287,6 +287,36 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         const body = await readBody(request);
         const run = await agentRuntime.verify(runVerifyMatch[1], runVerifyMatch[2], body);
         json(response, 202, { run, project: await store.getProject(runVerifyMatch[1]) });
+        return true;
+      }
+
+      const documentsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents$/);
+      if (documentsMatch && request.method === 'POST') {
+        const project = await store.createDocument(documentsMatch[1], await readBody(request));
+        json(response, project ? 201 : 404, project ? { project } : { error: 'Project not found' });
+        return true;
+      }
+
+      const documentCommitMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents\/([^/]+)\/commit$/);
+      if (documentCommitMatch && request.method === 'POST') {
+        if (!agentRuntime?.commitDocument) {
+          json(response, 501, { error: 'Committing rules to the repository is not supported by the configured agent runtime' });
+          return true;
+        }
+        const result = await agentRuntime.commitDocument(documentCommitMatch[1], documentCommitMatch[2], await readBody(request));
+        json(response, 200, result);
+        return true;
+      }
+
+      const documentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents\/([^/]+)$/);
+      if (documentMatch && request.method === 'PATCH') {
+        const project = await store.updateDocument(documentMatch[1], documentMatch[2], await readBody(request));
+        json(response, project ? 200 : 404, project ? { project } : { error: 'Document not found' });
+        return true;
+      }
+      if (documentMatch && request.method === 'DELETE') {
+        const project = await store.deleteDocument(documentMatch[1], documentMatch[2]);
+        json(response, project ? 200 : 404, project ? { project } : { error: 'Document not found' });
         return true;
       }
 

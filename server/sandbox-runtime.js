@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { Sandbox } from '@vercel/sandbox';
 import { parseGitHubRepository } from './github-repository.js';
 import { detectVerifyCommand } from './repository.js';
+import { commitDocumentToGitHub, formatRulesSection } from './documents.js';
 
 const ACTIVE = new Set(['queued', 'running', 'paused']);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
@@ -53,6 +54,7 @@ function readableEvent(payload) {
 
 function buildAgentPrompt(project, branch, contexts, task) {
   const sharedContext = contexts.map((item) => `- ${item.label}: ${item.value}`).join('\n') || '- No additional shared context.';
+  const rules = formatRulesSection(project.documents, 4_000);
   return `You are a coding agent working in an isolated Vercel Sandbox managed by Threadline.
 
 Project objective: ${project.intent.objective}
@@ -66,7 +68,7 @@ Assigned task: ${task}
 
 Shared context:
 ${sharedContext}
-
+${rules ? `\n${rules}\n` : ''}
 Operating rules:
 - Work only in the checked-out repository inside this sandbox.
 - Do not push, change Git remotes, modify Git configuration, or create external side effects.
@@ -141,6 +143,7 @@ export function createSandboxRuntime(store, options = {}) {
   const model = options.model || process.env.OPENAI_MODEL || 'gpt-5.6-sol';
   const timeout = Number(options.timeout || process.env.THREADLINE_SANDBOX_TIMEOUT || DEFAULT_TIMEOUT);
   const SandboxClass = options.SandboxClass || Sandbox;
+  const fetchImpl = options.fetchImpl || fetch;
 
   async function adapterInfo() {
     const sandboxAuth = Boolean(process.env.VERCEL || process.env.VERCEL_OIDC_TOKEN || options.allowWithoutVercelAuth);
@@ -439,6 +442,23 @@ exit "$code"
     }
   }
 
+  async function commitDocument(projectId, docId, input = {}) {
+    const project = await store.getProject(projectId);
+    const document = project?.documents?.find((item) => item.id === docId);
+    if (!project || !document) throw integrationError('Document not found', 404);
+    if (!project.repoPath) throw integrationError('Connect a GitHub repository before committing rules');
+    const result = await commitDocumentToGitHub(project, document, { token: githubToken, message: input.message, fetchImpl });
+    const committedAt = new Date().toISOString();
+    await store.updateDocument(projectId, docId, { committedAt, committedSha: result.contentSha || result.commitSha, committedBranch: result.branch });
+    if (result.commitSha && store.updateProjectIntegration) {
+      await store.updateProjectIntegration(projectId, {
+        ...(project.integration || {}),
+        branchName: result.branch, headCommit: result.commitSha, remote: parseGitHubRepository(project.repoPath).root, updatedAt: committedAt
+      });
+    }
+    return { project: await store.getProject(projectId), commit: { sha: result.commitSha, branch: result.branch, path: result.path } };
+  }
+
   async function startVerificationSandbox(project, run) {
     if (run.sandboxName) {
       try {
@@ -586,5 +606,5 @@ exit "$code"
     return refreshes.get(key);
   }
 
-  return { adapterInfo, start, refresh, refreshProject, control, integrate, verify, shutdown: () => {} };
+  return { adapterInfo, start, refresh, refreshProject, control, integrate, verify, commitDocument, shutdown: () => {} };
 }
