@@ -145,3 +145,54 @@ test('persists agent runs, event evidence, and resolvable attention', (t) => {
   project = store.resolveAttentionItem(project.id, attention.id);
   assert.equal(project.attentionItems[0].status, 'resolved');
 });
+
+test('stores the chat tree, rules documents, and ship settings', (t) => {
+  const store = createStore(':memory:');
+  t.after(() => store.close());
+  const project = store.createProject({ name: 'Chat pivot', brief: 'Chat-first workspace' });
+
+  assert.equal(project.documents.length, 1);
+  assert.equal(project.documents[0].name, 'CLAUDE.md');
+  assert.match(project.documents[0].content, /Chat pivot/);
+  assert.deepEqual(project.shipSettings, { vercelProjectId: '', vercelTeamId: '' });
+  assert.deepEqual(project.chatNodes, []);
+
+  const root = store.appendChatNode(project.id, { role: 'user', content: 'Build the drill engine' });
+  const reply = store.appendChatNode(project.id, {
+    role: 'assistant', parentId: root.id, content: 'Two ways to approach this.',
+    directions: [{ label: 'Deep research', summary: 'Study existing solvers first.', recommended: false }, { label: 'Practical build', summary: 'Ship a minimal engine now.', recommended: true }],
+    actions: [{ tool: 'start_agent_run', runId: 'run-1', status: 'started', result: 'run queued' }]
+  });
+  const pick = store.appendChatNode(project.id, { role: 'user', parentId: reply.id, directionId: reply.directions[1].id, content: 'Go practical.' });
+
+  const loaded = store.getProject(project.id);
+  assert.equal(loaded.chatNodes.length, 3);
+  const loadedReply = loaded.chatNodes.find((node) => node.id === reply.id);
+  assert.equal(loadedReply.directions.length, 2);
+  assert.equal(loadedReply.actions[0].runId, 'run-1');
+  assert.equal(loaded.chatNodes.find((node) => node.id === pick.id).directionId, reply.directions[1].id);
+  assert.throws(() => store.appendChatNode(project.id, { role: 'user', parentId: 'missing', content: 'orphan' }), /Parent chat node not found/);
+  assert.throws(() => store.appendChatNode(project.id, { role: 'oracle', content: 'nope' }), /role is invalid/);
+
+  const withBranch = store.updateChatNode(project.id, reply.id, { engineBranchId: 'branch-1', actions: [{ tool: 'start_agent_run', runId: 'run-1', status: 'done', result: 'completed' }] });
+  assert.equal(withBranch.engineBranchId, 'branch-1');
+  assert.equal(withBranch.actions[0].status, 'done');
+
+  const run = store.createAgentRun(project.id, project.branches[0].id, { task: 'Do it', nodeId: reply.id });
+  assert.equal(store.getAgentRun(project.id, run.id).nodeId, reply.id);
+
+  let updated = store.createDocument(project.id, { name: 'skills/research.md', content: 'How to research.' });
+  assert.equal(updated.documents.length, 2);
+  assert.throws(() => store.createDocument(project.id, { name: '../escape.md' }), /repository-relative/);
+  assert.throws(() => store.createDocument(project.id, { name: 'notes.txt' }), /\.md/);
+  const doc = updated.documents.find((item) => item.name === 'skills/research.md');
+  updated = store.updateDocument(project.id, doc.id, { content: 'Updated guidance.', committedAt: '2026-08-29T00:00:00.000Z', committedSha: 'sha1', committedBranch: 'threadline/x' });
+  const committed = updated.documents.find((item) => item.id === doc.id);
+  assert.equal(committed.content, 'Updated guidance.');
+  assert.equal(committed.committedSha, 'sha1');
+  updated = store.deleteDocument(project.id, doc.id);
+  assert.equal(updated.documents.length, 1);
+
+  updated = store.updateShipSettings(project.id, { vercelProjectId: 'prj_123', vercelTeamId: 'team_9' });
+  assert.deepEqual(updated.shipSettings, { vercelProjectId: 'prj_123', vercelTeamId: 'team_9' });
+});

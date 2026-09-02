@@ -66,3 +66,53 @@ test('selectively merges hosted branch findings and restores the prior checkpoin
   assert.equal(restored.branches.find((branch) => branch.id === alternative.id).status, 'review');
   assert.deepEqual(restored.branches.find((branch) => branch.id === main.id).output.changes, []);
 });
+
+test('stores the chat tree, documents, and ship settings in the hosted document', async (t) => {
+  const store = setup(t);
+  const project = await store.createProject({ name: 'Hosted chat', brief: 'Chat-first hosted workspace' });
+  assert.equal(project.documents[0].name, 'CLAUDE.md');
+  assert.deepEqual(project.shipSettings, { vercelProjectId: '', vercelTeamId: '' });
+
+  const root = await store.appendChatNode(project.id, { role: 'user', content: 'Plan the trainer' });
+  const reply = await store.appendChatNode(project.id, {
+    role: 'assistant', parentId: root.id, content: 'Pick a direction.',
+    directions: [{ label: 'Technical', summary: 'Deep dive.' }, { label: 'Practical', summary: 'Ship now.', recommended: true }]
+  });
+  await assert.rejects(store.appendChatNode(project.id, { role: 'user', parentId: 'missing', content: 'orphan' }), /Parent chat node not found/);
+  await store.updateChatNode(project.id, reply.id, { engineBranchId: 'branch-1' });
+
+  const run = await store.createAgentRun(project.id, project.branches[0].id, { task: 'Do it', nodeId: reply.id });
+  assert.equal((await store.getAgentRun(project.id, run.id)).nodeId, reply.id);
+
+  let updated = await store.createDocument(project.id, { name: 'HARNESS.md', content: 'Harness rules.' });
+  assert.equal(updated.documents.length, 2);
+  const doc = updated.documents.find((item) => item.name === 'HARNESS.md');
+  updated = await store.updateDocument(project.id, doc.id, { committedSha: 'sha2', committedAt: '2026-08-29T00:00:00.000Z', committedBranch: 'threadline/y' });
+  assert.equal(updated.documents.find((item) => item.id === doc.id).committedSha, 'sha2');
+  updated = await store.updateShipSettings(project.id, { vercelProjectId: 'prj_abc' });
+  assert.equal(updated.shipSettings.vercelProjectId, 'prj_abc');
+
+  const loaded = await store.getProject(project.id);
+  assert.equal(loaded.chatNodes.length, 2);
+  assert.equal(loaded.chatNodes.find((node) => node.id === reply.id).engineBranchId, 'branch-1');
+});
+
+test('normalizes legacy hosted documents that predate the chat pivot', async (t) => {
+  const database = newDb();
+  const { Pool } = database.adapters.createPg();
+  const pool = new Pool();
+  const store = createCloudStore('', { pool });
+  t.after(() => store.close());
+  const project = await store.createProject({ name: 'Legacy', brief: 'Old shape' });
+  const legacy = JSON.parse(JSON.stringify(project));
+  delete legacy.chatNodes;
+  delete legacy.documents;
+  delete legacy.shipSettings;
+  await pool.query('UPDATE threadline_projects SET document = $2::jsonb WHERE id = $1', [project.id, JSON.stringify(legacy)]);
+  const loaded = await store.getProject(project.id);
+  assert.deepEqual(loaded.chatNodes, []);
+  assert.deepEqual(loaded.documents, []);
+  assert.deepEqual(loaded.shipSettings, { vercelProjectId: '', vercelTeamId: '' });
+  const node = await store.appendChatNode(project.id, { role: 'user', content: 'Still works' });
+  assert.ok(node.id);
+});
