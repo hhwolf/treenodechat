@@ -26,6 +26,78 @@ export const defaultIntent = (brief = '') => ({
   ]
 });
 
+export const CHAT_NODE_ROLES = new Set(['user', 'assistant', 'notice']);
+export const CHAT_ACTION_STATUSES = new Set(['done', 'error', 'started', 'needs_approval', 'approved', 'dismissed']);
+export const MAX_CHAT_NODES = 500;
+export const defaultShipSettings = () => ({ vercelProjectId: '', vercelTeamId: '' });
+
+export function normalizeChatDirections(directions) {
+  return (Array.isArray(directions) ? directions : []).slice(0, 3).map((item) => ({
+    id: item?.id || randomUUID(),
+    label: String(item?.label || '').trim().slice(0, 60),
+    summary: String(item?.summary || '').trim().slice(0, 500),
+    recommended: Boolean(item?.recommended)
+  })).filter((item) => item.label);
+}
+
+export function normalizeChatActions(actions) {
+  return (Array.isArray(actions) ? actions : []).slice(0, 12).map((item) => ({
+    id: item?.id || randomUUID(),
+    tool: String(item?.tool || '').slice(0, 60),
+    args: item?.args && typeof item.args === 'object' ? item.args : {},
+    status: CHAT_ACTION_STATUSES.has(item?.status) ? item.status : 'done',
+    runId: item?.runId || null,
+    result: String(item?.result || '').slice(0, 2_000),
+    createdAt: item?.createdAt || now()
+  })).filter((item) => item.tool);
+}
+
+export function normalizeChatNode(input, timestamp = now()) {
+  if (!CHAT_NODE_ROLES.has(input?.role)) throw new Error('Chat node role is invalid');
+  const content = String(input.content || '').trim().slice(0, 20_000);
+  if (!content) throw new Error('Chat node requires content');
+  return {
+    id: input.id || randomUUID(),
+    parentId: input.parentId || null,
+    role: input.role,
+    content,
+    directionId: input.directionId || null,
+    directions: normalizeChatDirections(input.directions),
+    actions: normalizeChatActions(input.actions),
+    engineBranchId: input.engineBranchId || null,
+    createdAt: timestamp
+  };
+}
+
+export function normalizeDocumentName(name) {
+  const value = String(name || '').trim();
+  const safe = value.length > 0
+    && value.length <= 200
+    && !value.startsWith('/')
+    && !value.includes('\\')
+    && !value.split('/').some((part) => !part || part === '.' || part === '..');
+  if (!safe || !/\.md$/i.test(value)) throw new Error('Document name must be a repository-relative .md path');
+  return value;
+}
+
+export function taskBranchName(task, existingNames = []) {
+  const base = String(task || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ').replace(/[.,;:!?]+$/, '').slice(0, 60) || 'Agent task';
+  const taken = new Set(existingNames.map((name) => String(name).toLowerCase()));
+  let candidate = base;
+  for (let suffix = 2; taken.has(candidate.toLowerCase()); suffix += 1) candidate = `${base} ${suffix}`;
+  return candidate;
+}
+
+export const defaultDocuments = (name, brief, timestamp) => ([{
+  id: randomUUID(),
+  name: 'CLAUDE.md',
+  content: `# ${name || 'Project'}\n\n${brief || 'Describe the project objective here.'}\n\n## Working rules\n\n- Keep changes small, reviewable, and verified.\n- Ask before irreversible or externally visible actions.\n`,
+  updatedAt: timestamp,
+  committedAt: null,
+  committedSha: null,
+  committedBranch: null
+}]);
+
 export function createStore(path = ':memory:', { seed = false } = {}) {
   if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true });
   const db = new DatabaseSync(path, { timeout: 5000 });
@@ -40,6 +112,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       repo_scanned_at TEXT,
       integration_json TEXT NOT NULL DEFAULT '{}',
       verify_command TEXT NOT NULL DEFAULT '',
+      ship_settings_json TEXT NOT NULL DEFAULT '{}',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -114,6 +187,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       diff_text TEXT NOT NULL DEFAULT '',
       integration_json TEXT NOT NULL DEFAULT '{}',
       verification_json TEXT NOT NULL DEFAULT '{}',
+      node_id TEXT,
       started_at TEXT,
       ended_at TEXT,
       created_at TEXT NOT NULL,
@@ -141,6 +215,30 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       created_at TEXT NOT NULL,
       resolved_at TEXT
     );
+    CREATE TABLE IF NOT EXISTS chat_nodes (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      parent_id TEXT,
+      role TEXT NOT NULL CHECK(role IN ('user', 'assistant', 'notice')),
+      content TEXT NOT NULL DEFAULT '',
+      direction_id TEXT,
+      directions_json TEXT NOT NULL DEFAULT '[]',
+      actions_json TEXT NOT NULL DEFAULT '[]',
+      engine_branch_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS documents (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      content TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL,
+      committed_at TEXT,
+      committed_sha TEXT,
+      committed_branch TEXT
+    );
+    CREATE INDEX IF NOT EXISTS chat_nodes_project ON chat_nodes(project_id, created_at);
+    CREATE INDEX IF NOT EXISTS documents_project ON documents(project_id, name);
     CREATE INDEX IF NOT EXISTS agent_runs_project_branch ON agent_runs(project_id, branch_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS agent_run_events_run ON agent_run_events(run_id, id DESC);
     CREATE INDEX IF NOT EXISTS attention_items_project_status ON attention_items(project_id, status, created_at DESC);
@@ -151,12 +249,14 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
   if (!projectColumns.has('repo_scanned_at')) db.exec('ALTER TABLE projects ADD COLUMN repo_scanned_at TEXT');
   if (!projectColumns.has('integration_json')) db.exec("ALTER TABLE projects ADD COLUMN integration_json TEXT NOT NULL DEFAULT '{}'");
   if (!projectColumns.has('verify_command')) db.exec("ALTER TABLE projects ADD COLUMN verify_command TEXT NOT NULL DEFAULT ''");
+  if (!projectColumns.has('ship_settings_json')) db.exec("ALTER TABLE projects ADD COLUMN ship_settings_json TEXT NOT NULL DEFAULT '{}'");
   const runColumns = new Set(db.prepare('PRAGMA table_info(agent_runs)').all().map((column) => column.name));
   if (!runColumns.has('sandbox_name')) db.exec('ALTER TABLE agent_runs ADD COLUMN sandbox_name TEXT');
   if (!runColumns.has('command_id')) db.exec('ALTER TABLE agent_runs ADD COLUMN command_id TEXT');
   if (!runColumns.has('event_cursor')) db.exec('ALTER TABLE agent_runs ADD COLUMN event_cursor INTEGER NOT NULL DEFAULT 0');
   if (!runColumns.has('integration_json')) db.exec("ALTER TABLE agent_runs ADD COLUMN integration_json TEXT NOT NULL DEFAULT '{}'");
   if (!runColumns.has('verification_json')) db.exec("ALTER TABLE agent_runs ADD COLUMN verification_json TEXT NOT NULL DEFAULT '{}'");
+  if (!runColumns.has('node_id')) db.exec('ALTER TABLE agent_runs ADD COLUMN node_id TEXT');
 
   const event = (projectId, kind, summary) => {
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?)').run(randomUUID(), projectId, kind, summary, now());
@@ -201,6 +301,28 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     updatedAt: row.updated_at
   });
 
+  const rowToChatNode = (row) => ({
+    id: row.id,
+    parentId: row.parent_id,
+    role: row.role,
+    content: row.content,
+    directionId: row.direction_id,
+    directions: parse(row.directions_json, []),
+    actions: parse(row.actions_json, []),
+    engineBranchId: row.engine_branch_id,
+    createdAt: row.created_at
+  });
+
+  const rowToDocument = (row) => ({
+    id: row.id,
+    name: row.name,
+    content: row.content,
+    updatedAt: row.updated_at,
+    committedAt: row.committed_at,
+    committedSha: row.committed_sha,
+    committedBranch: row.committed_branch
+  });
+
   const rowToVerification = (row) => {
     const verification = parse(row.verification_json, {});
     return verification.status ? verification : null;
@@ -227,6 +349,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     diff: row.diff_text,
     integration: parse(row.integration_json, {}),
     verification: rowToVerification(row),
+    nodeId: row.node_id,
     startedAt: row.started_at,
     endedAt: row.ended_at,
     createdAt: row.created_at,
@@ -295,6 +418,8 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     }
     const agentRuns = runRows.map((run) => rowToAgentRun(run, eventsByRun.get(run.id) || []));
     const attentionItems = db.prepare('SELECT * FROM attention_items WHERE project_id = ? ORDER BY status, created_at DESC LIMIT 100').all(projectId).map(rowToAttentionItem);
+    const chatNodes = db.prepare('SELECT * FROM chat_nodes WHERE project_id = ? ORDER BY created_at, id LIMIT 500').all(projectId).map(rowToChatNode);
+    const documents = db.prepare('SELECT * FROM documents WHERE project_id = ? ORDER BY name').all(projectId).map(rowToDocument);
     return {
       id: row.id,
       name: row.name,
@@ -303,6 +428,9 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       repository: parse(row.repo_snapshot_json, {}),
       integration: parse(row.integration_json, {}),
       verifyCommand: row.verify_command || '',
+      shipSettings: { ...defaultShipSettings(), ...parse(row.ship_settings_json, {}) },
+      chatNodes,
+      documents,
       branches,
       contexts,
       reasoning,
@@ -330,10 +458,10 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     const timestamp = now();
     db.prepare(`INSERT INTO agent_runs (
       id, project_id, branch_id, adapter, status, task, worktree_path, base_commit,
-      session_id, pid, sandbox_name, command_id, event_cursor, exit_code, summary, files_json, diff_stat, diff_text,
+      session_id, pid, sandbox_name, command_id, node_id, event_cursor, exit_code, summary, files_json, diff_stat, diff_text,
       started_at, ended_at, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, 0, NULL, '', '[]', '', '', NULL, NULL, ?, ?)`)
-      .run(id, projectId, branchId, input.adapter || 'codex', input.task, input.worktreePath || '', input.baseCommit || null, input.sandboxName || null, input.commandId || null, timestamp, timestamp);
+    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, NULL, NULL, ?, ?, ?, 0, NULL, '', '[]', '', '', NULL, NULL, ?, ?)`)
+      .run(id, projectId, branchId, input.adapter || 'codex', input.task, input.worktreePath || '', input.baseCommit || null, input.sandboxName || null, input.commandId || null, input.nodeId || null, timestamp, timestamp);
     db.prepare("UPDATE branches SET status = 'active', updated_at = ? WHERE id = ?").run(timestamp, branchId);
     touchProject(projectId);
     event(projectId, 'agent', `Queued ${input.adapter || 'Codex'} for a focused run.`);
@@ -353,7 +481,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     const status = updates.status ?? current.status;
     const startedAt = updates.startedAt ?? current.started_at ?? (status === 'running' ? timestamp : null);
     const endedAt = updates.endedAt ?? current.ended_at ?? (['completed', 'failed', 'cancelled'].includes(status) ? timestamp : null);
-    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, sandbox_name = ?, command_id = ?, event_cursor = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, integration_json = ?, verification_json = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
+    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, sandbox_name = ?, command_id = ?, node_id = ?, event_cursor = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, integration_json = ?, verification_json = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
       status,
       updates.worktreePath ?? current.worktree_path,
       updates.baseCommit ?? current.base_commit,
@@ -361,6 +489,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       updates.pid === undefined ? current.pid : updates.pid,
       updates.sandboxName ?? current.sandbox_name,
       updates.commandId ?? current.command_id,
+      updates.nodeId ?? current.node_id,
       updates.eventCursor ?? current.event_cursor,
       updates.exitCode === undefined ? current.exit_code : updates.exitCode,
       updates.summary ?? current.summary,
@@ -474,6 +603,9 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     db.prepare('INSERT INTO contexts VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?)').run(
       randomUUID(), id, 'Repository boundary', repoPath || 'No repository selected', 'project', 'shared', 'Project setup', timestamp
     );
+    for (const document of defaultDocuments(name, brief, timestamp)) {
+      db.prepare('INSERT INTO documents VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)').run(document.id, id, document.name, document.content, timestamp);
+    }
     event(id, 'project', 'Project created from a structured intent.');
     return getProject(id);
   }
@@ -508,6 +640,88 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     event(projectId, 'integration', integration?.headCommit
       ? `Project code advanced on ${integration.branchName} at ${integration.headCommit.slice(0, 8)}.`
       : 'Project integration workspace initialized.');
+    return getProject(projectId);
+  }
+
+  function appendChatNode(projectId, input) {
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) return null;
+    const count = db.prepare('SELECT COUNT(*) AS count FROM chat_nodes WHERE project_id = ?').get(projectId);
+    if (Number(count.count) >= MAX_CHAT_NODES) throw new Error('This project chat has reached its node limit');
+    const node = normalizeChatNode(input, now());
+    if (node.parentId && !db.prepare('SELECT id FROM chat_nodes WHERE id = ? AND project_id = ?').get(node.parentId, projectId)) {
+      throw new Error('Parent chat node not found');
+    }
+    db.prepare('INSERT INTO chat_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+      node.id, projectId, node.parentId, node.role, node.content, node.directionId,
+      JSON.stringify(node.directions), JSON.stringify(node.actions), node.engineBranchId, node.createdAt
+    );
+    touchProject(projectId);
+    return node;
+  }
+
+  function updateChatNode(projectId, nodeId, updates = {}) {
+    const row = db.prepare('SELECT * FROM chat_nodes WHERE id = ? AND project_id = ?').get(nodeId, projectId);
+    if (!row) return null;
+    const node = rowToChatNode(row);
+    if (updates.actions) node.actions = normalizeChatActions(updates.actions);
+    if (updates.directions) node.directions = normalizeChatDirections(updates.directions);
+    if ('engineBranchId' in updates) node.engineBranchId = updates.engineBranchId || null;
+    if (updates.content !== undefined) node.content = String(updates.content).trim().slice(0, 20_000);
+    db.prepare('UPDATE chat_nodes SET content = ?, directions_json = ?, actions_json = ?, engine_branch_id = ? WHERE id = ? AND project_id = ?').run(
+      node.content, JSON.stringify(node.directions), JSON.stringify(node.actions), node.engineBranchId, nodeId, projectId
+    );
+    touchProject(projectId);
+    return node;
+  }
+
+  function createDocument(projectId, { name, content = '' }) {
+    if (!db.prepare('SELECT id FROM projects WHERE id = ?').get(projectId)) return null;
+    const documentName = normalizeDocumentName(name);
+    if (db.prepare('SELECT id FROM documents WHERE project_id = ? AND name = ?').get(projectId, documentName)) throw new Error('A document with this name already exists');
+    const count = db.prepare('SELECT COUNT(*) AS count FROM documents WHERE project_id = ?').get(projectId);
+    if (Number(count.count) >= 40) throw new Error('This project has reached its document limit');
+    db.prepare('INSERT INTO documents VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)').run(
+      randomUUID(), projectId, documentName, String(content || '').slice(0, 20_000), now()
+    );
+    event(projectId, 'rules', `${documentName} added to project rules.`);
+    return getProject(projectId);
+  }
+
+  function updateDocument(projectId, docId, updates = {}) {
+    const row = db.prepare('SELECT * FROM documents WHERE id = ? AND project_id = ?').get(docId, projectId);
+    if (!row) return null;
+    const name = updates.name !== undefined ? normalizeDocumentName(updates.name) : row.name;
+    if (name !== row.name && db.prepare('SELECT id FROM documents WHERE project_id = ? AND name = ?').get(projectId, name)) throw new Error('A document with this name already exists');
+    const contentChanged = updates.content !== undefined && updates.content !== row.content;
+    db.prepare('UPDATE documents SET name = ?, content = ?, updated_at = ?, committed_at = ?, committed_sha = ?, committed_branch = ? WHERE id = ? AND project_id = ?').run(
+      name,
+      updates.content !== undefined ? String(updates.content).slice(0, 20_000) : row.content,
+      contentChanged || updates.name !== undefined ? now() : row.updated_at,
+      updates.committedAt !== undefined ? updates.committedAt : row.committed_at,
+      updates.committedSha !== undefined ? updates.committedSha : row.committed_sha,
+      updates.committedBranch !== undefined ? updates.committedBranch : row.committed_branch,
+      docId, projectId
+    );
+    touchProject(projectId);
+    return getProject(projectId);
+  }
+
+  function deleteDocument(projectId, docId) {
+    const row = db.prepare('SELECT name FROM documents WHERE id = ? AND project_id = ?').get(docId, projectId);
+    if (!row) return null;
+    db.prepare('DELETE FROM documents WHERE id = ? AND project_id = ?').run(docId, projectId);
+    event(projectId, 'rules', `${row.name} removed from project rules.`);
+    return getProject(projectId);
+  }
+
+  function updateShipSettings(projectId, settings = {}) {
+    const project = getProject(projectId);
+    if (!project) return null;
+    const next = {
+      vercelProjectId: String(settings.vercelProjectId ?? project.shipSettings.vercelProjectId ?? '').trim().slice(0, 120),
+      vercelTeamId: String(settings.vercelTeamId ?? project.shipSettings.vercelTeamId ?? '').trim().slice(0, 120)
+    };
+    db.prepare('UPDATE projects SET ship_settings_json = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now(), projectId);
     return getProject(projectId);
   }
 
@@ -802,6 +1016,12 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     updateRepositorySnapshot,
     updateProjectIntegration,
     updateProjectSettings,
+    updateShipSettings,
+    appendChatNode,
+    updateChatNode,
+    createDocument,
+    updateDocument,
+    deleteDocument,
     createBranch,
     updateBranch,
     createContext,

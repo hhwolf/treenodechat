@@ -2,7 +2,9 @@ import { createApiHandler } from '../server/app.js';
 import { authorizeRequest } from '../server/auth.js';
 import { createCloudStore } from '../server/cloud-store.js';
 import { inspectGitHubRepository } from '../server/github-repository.js';
+import { createOrchestrator } from '../server/orchestrator.js';
 import { createSandboxRuntime } from '../server/sandbox-runtime.js';
+import { createShip } from '../server/ship.js';
 
 export const config = { maxDuration: 300 };
 
@@ -26,10 +28,12 @@ function getResources() {
   if (resources) return resources;
   const store = createCloudStore();
   const agentRuntime = createSandboxRuntime(store);
+  const orchestrator = createOrchestrator(store, { agentRuntime });
+  const ship = createShip({});
   resources = {
     store,
     agentRuntime,
-    handler: createApiHandler(store, { agentRuntime, repositoryInspector: inspectGitHubRepository })
+    handler: createApiHandler(store, { agentRuntime, repositoryInspector: inspectGitHubRepository, orchestrator, ship })
   };
   return resources;
 }
@@ -48,7 +52,8 @@ export default async function handler(request, response) {
         database: Boolean(process.env.DATABASE_URL),
         accessToken: Boolean(process.env.THREADLINE_ACCESS_TOKEN),
         openAI: Boolean(process.env.OPENAI_API_KEY),
-        github: Boolean(process.env.GITHUB_TOKEN)
+        github: Boolean(process.env.GITHUB_TOKEN),
+        vercel: Boolean(process.env.VERCEL_TOKEN)
       },
       agentConfigured: Boolean(process.env.OPENAI_API_KEY),
       authRequired: true

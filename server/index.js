@@ -4,6 +4,8 @@ import { dirname, extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createApiHandler } from './app.js';
 import { createAgentRuntime } from './agent-runtime.js';
+import { createOrchestrator } from './orchestrator.js';
+import { createShip } from './ship.js';
 import { createStore } from './store.js';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -13,7 +15,9 @@ const dbPath = process.env.THREADLINE_DB_PATH || join(root, '.threadline', 'thre
 const store = createStore(dbPath, { seed: process.env.THREADLINE_EMPTY !== '1' });
 const interruptedRuns = store.recoverInterruptedRuns();
 const agentRuntime = createAgentRuntime(store, { stateRoot: dirname(dbPath) });
-const handleApi = createApiHandler(store, { agentRuntime });
+const orchestrator = createOrchestrator(store, { agentRuntime });
+const ship = createShip({});
+const handleApi = createApiHandler(store, { agentRuntime, orchestrator, ship });
 let vite;
 
 if (!production) {

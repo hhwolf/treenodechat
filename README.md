@@ -1,6 +1,13 @@
 # Threadline
 
-Threadline keeps developers and coding agents synchronized on large, long-running projects. Instead of treating chat history as the project, it persists intent, scoped context, parallel branches, proposed decisions, agent evidence, attention items, and recovery points.
+Threadline is a chat-first workspace for building software with coding agents. You talk to an orchestrator model that deploys isolated agent runs, verifies their output, and integrates accepted code — while the conversation itself is a **tree**: at genuinely open decisions the model proposes labeled directions with reasoning, picking one forks the thread, and unchosen directions stay explorable.
+
+Four tabs, nothing else:
+
+- **Chat** — the main surface. Messages, live agent-run cards (pause/cancel/diff/verify/integrate), model-proposed direction cards, and approval cards for external actions.
+- **Tree** — the whole conversation as a navigable map; click any node to reopen that path.
+- **Rules** — one home for everything that governs the project: the intent contract, the connected repository, editable rule documents (CLAUDE.md, skills, guidelines) injected into every chat turn and agent prompt with one-click commit-to-repo sync, and the verify command.
+- **Ship** — GitHub pull requests (create/merge), Vercel deployments (trigger/rollback), and environment variables, each behind an explicit typed confirmation.
 
 It supports two deliberately compatible runtimes:
 
@@ -13,18 +20,15 @@ It supports two deliberately compatible runtimes:
 
 ## What works
 
-- Create and switch between persistent projects.
-- Turn a rough objective into a structured, editable intent.
-- Ground reasoning in a bounded, secret-filtered repository snapshot.
-- Keep model interpretations provisional until a human confirms or dismisses them.
-- Fork parallel branches with inherited and branch-only context.
-- Keep private and restricted context out of agent prompts.
-- Start, pause, resume, cancel, and inspect focused Codex runs.
-- Review event evidence, changed files, diff statistics, patches, and blockers without reading a full transcript.
-- Accept selected files from completed local runs into a persistent project-owned integration branch and workspace.
-- Route completed reviews and failures into a human Attention inbox.
-- Selectively merge accepted Threadline findings with automatic recovery checkpoints.
-- Reveal context, recovery, and activity only when Advanced is opened.
+- Chat with an orchestrator (OpenAI Responses API) that can start isolated Codex runs, check their status, run verification, and integrate reviewed files — all as model tools with hard budgets.
+- Tree-structured conversation: model-proposed directions with reasoning and a recommendation, manual forks from any message, and a Tree tab that maps every branch.
+- Ship-class actions (pull requests, merges, deployments, rollbacks, env vars) can only be *proposed* by the model; each renders an approval card and executes solely on your confirmation.
+- Rules documents stored per project, injected into chat and agent prompts, and committable to the repository's `threadline/…` branch (GitHub Contents API hosted, integration workspace locally).
+- Structured, editable project intent that every turn and run inherits.
+- Bounded, secret-filtered repository snapshots grounding the orchestrator and agents.
+- Start, pause, resume, cancel, and inspect focused Codex runs with event evidence and diffs.
+- One-click verification of completed runs (auto-detected `npm test`, editable) in a resumed or recreated sandbox hosted, or from the parent process locally.
+- Accept selected whole files from completed runs onto a project-owned integration branch — pushed to GitHub hosted, in a dedicated worktree locally.
 
 ## Deploy on Vercel
 
@@ -33,8 +37,9 @@ The repository is ready for Vercel Functions, managed Postgres, and Vercel Sandb
 1. Add a managed Postgres integration from the Vercel Marketplace and expose its connection string as `DATABASE_URL`.
 2. Add `THREADLINE_ACCESS_TOKEN` using a long random value. For example, generate one locally with `openssl rand -base64 32`.
 3. Add `OPENAI_API_KEY` and set `OPENAI_MODEL` to `gpt-5.6-sol`.
-4. Optionally add a fine-grained `GITHUB_TOKEN` with read-only **Contents** and **Metadata** access for private repositories. Public repositories need no token.
-5. Apply the variables to Production and Preview, then redeploy.
+4. Optionally add a fine-grained `GITHUB_TOKEN`: read-only **Contents** and **Metadata** unlocks private repositories; **Contents: write** additionally enables hosted integration, rules commits, and pull requests. Public read-only use needs no token.
+5. Optionally add `VERCEL_TOKEN` to enable the Ship tab's deployment and env-var management, then set each project's Vercel project id in Ship settings.
+6. Apply the variables to Production and Preview, then redeploy.
 
 Use [.env.example](.env.example) as the configuration checklist. Agent sandboxes default to a 40-minute timeout; set `THREADLINE_SANDBOX_TIMEOUT` in milliseconds when a different limit is needed. Never commit real credentials.
 
@@ -89,14 +94,12 @@ Model credentials never reach the browser. Repository excerpts and shared contex
 
 ## Test the workflow
 
-1. Create a project from a GitHub URL when hosted, or a repository path locally.
-2. Review the repository grounding on **Focus**.
-3. Draft the reasoning focus, confirm useful items, and add a counterpoint with **Challenge**.
-4. Fork an approach or open a branch, then select **Run with Codex**.
-5. Follow the event stream and try **Pause**, **Resume**, or **Cancel run**.
-6. Inspect the resulting patch, choose whole files, and select **Integrate selected files** (hosted integration needs a pushable `GITHUB_TOKEN`).
-7. Use **Merge findings** separately when you want to carry structured conclusions into another Threadline branch; this does not apply code.
-8. Start another run from the accepted integration head, or use the displayed Git merge command for final delivery.
+1. Create a project (name, repository, brief) — one screen, then you land in **Chat**.
+2. Describe a task. The orchestrator answers or starts an isolated agent run; the run card streams status live with **Pause**, **Cancel run**, and **Inspect diff**.
+3. When a run finishes, use **Continue with the run result**, click **Verify** to run the tests, and **Integrate selected files** to accept reviewed code onto the `threadline/…` branch.
+4. Ask an open-ended question — the model proposes 2–3 directions with reasoning; pick one to fork, or **Fork from here** on any message. See every branch in **Tree**.
+5. In **Rules**, refine the intent, edit CLAUDE.md or add a skill document, and **Commit to repo** to sync it.
+6. In **Ship**, open a pull request from the integration branch, merge it with a typed confirmation, deploy on Vercel, and manage env vars. Model-proposed ship actions appear in chat as approval cards and do nothing until you approve them.
 
 Run the automated checks with:
 
@@ -110,9 +113,12 @@ The suite covers local and Postgres domain behavior, context privacy, repository
 ## Architecture
 
 ```text
-src/                         React workspace and authenticated API client
+src/                         React chat workspace (App shell, chat, tree, rules, ship)
 api/[...].js                 Vercel Function entry point and hosted access gate
 server/app.js                Runtime-neutral HTTP API routes
+server/orchestrator.js       Chat orchestrator: Responses API tool loop over the engine
+server/documents.js          Rules formatting and commit-to-repo sync
+server/ship.js               GitHub PR/merge and Vercel deploy/rollback/env pipeline
 server/store.js              Local SQLite domain store
 server/cloud-store.js        Postgres aggregate store with transactional updates
 server/repository.js         Local secret-filtered repository scanner

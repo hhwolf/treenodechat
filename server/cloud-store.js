@@ -1,7 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import pg from 'pg';
 import { attachDatabasePool } from '@vercel/functions';
-import { defaultIntent } from './store.js';
+import {
+  MAX_CHAT_NODES, defaultDocuments, defaultIntent, defaultShipSettings,
+  normalizeChatActions, normalizeChatDirections, normalizeChatNode, normalizeDocumentName
+} from './store.js';
 
 const { Pool } = pg;
 const ACTIVE_RUN_STATUSES = new Set(['queued', 'running', 'paused']);
@@ -11,9 +14,18 @@ const REASONING_KINDS = new Set(['approach', 'evidence', 'assumption', 'question
 const now = () => new Date().toISOString();
 const clone = (value) => structuredClone(value);
 
+function normalizeProjectDocument(project) {
+  if (!project) return project;
+  project.chatNodes ||= [];
+  project.documents ||= [];
+  project.shipSettings = { ...defaultShipSettings(), ...(project.shipSettings || {}) };
+  project.verifyCommand ||= '';
+  return project;
+}
+
 function visibleProject(document) {
   if (!document) return null;
-  const project = clone(document);
+  const project = clone(normalizeProjectDocument(document));
   project.checkpoints = (project.checkpoints || []).map(({ snapshot: _snapshot, ...checkpoint }) => checkpoint);
   project.events = (project.events || []).slice(0, 30);
   project.agentRuns = (project.agentRuns || []).slice(0, 50).map((run) => ({ ...run, events: (run.events || []).slice(-12) }));
@@ -44,7 +56,7 @@ function inherited(project, branchId, includePrivate = false) {
 
 function normalizeRun(run) {
   return {
-    events: [], files: [], diffStat: '', diff: '', summary: '', eventCursor: 0, verification: null,
+    events: [], files: [], diffStat: '', diff: '', summary: '', eventCursor: 0, verification: null, nodeId: null,
     sandboxName: null, commandId: null, sessionId: null, pid: null, exitCode: null,
     startedAt: null, endedAt: null,
     ...run
@@ -113,7 +125,7 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
         await client.query('ROLLBACK');
         return null;
       }
-      const project = result.rows[0].document;
+      const project = normalizeProjectDocument(result.rows[0].document);
       const output = await transform(project);
       project.updatedAt = now();
       await client.query(
@@ -142,6 +154,9 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
       intent: { ...defaultIntent(brief), ...(intent || {}) },
       repository,
       verifyCommand: '',
+      shipSettings: defaultShipSettings(),
+      chatNodes: [],
+      documents: defaultDocuments(name, brief, timestamp),
       branches: [{
         id: mainId, projectId: id, parentId: null, name: 'Main', purpose: 'Deliver the approved project intent.',
         status: 'active', output: { summary: 'Mainline work starts here.', changes: [] }, createdAt: timestamp, updatedAt: timestamp
@@ -344,7 +359,8 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
       created = normalizeRun({
         id: input.id || randomUUID(), projectId, branchId, adapter: input.adapter || 'codex', status: 'queued',
         task: input.task, worktreePath: input.worktreePath || '', baseCommit: input.baseCommit || null,
-        sandboxName: input.sandboxName || null, commandId: input.commandId || null, createdAt: timestamp, updatedAt: timestamp
+        sandboxName: input.sandboxName || null, commandId: input.commandId || null, nodeId: input.nodeId || null,
+        createdAt: timestamp, updatedAt: timestamp
       });
       project.agentRuns.unshift(created);
       branch.status = 'active';
@@ -416,6 +432,82 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
     return run ? (run.events || []).filter((event) => event.id > (Number(after) || 0)).slice(0, 200) : null;
   }
 
+  async function appendChatNode(projectId, input) {
+    let created;
+    await mutate(projectId, (project) => {
+      if (project.chatNodes.length >= MAX_CHAT_NODES) throw new Error('This project chat has reached its node limit');
+      created = normalizeChatNode(input, now());
+      if (created.parentId && !project.chatNodes.some((node) => node.id === created.parentId)) throw new Error('Parent chat node not found');
+      project.chatNodes.push(created);
+    });
+    return created ? clone(created) : null;
+  }
+
+  async function updateChatNode(projectId, nodeId, updates = {}) {
+    let updated;
+    await mutate(projectId, (project) => {
+      const node = project.chatNodes.find((item) => item.id === nodeId);
+      if (!node) return null;
+      if (updates.actions) node.actions = normalizeChatActions(updates.actions);
+      if (updates.directions) node.directions = normalizeChatDirections(updates.directions);
+      if ('engineBranchId' in updates) node.engineBranchId = updates.engineBranchId || null;
+      if (updates.content !== undefined) node.content = String(updates.content).trim().slice(0, 20_000);
+      updated = clone(node);
+    });
+    return updated || null;
+  }
+
+  async function createDocument(projectId, { name, content = '' }) {
+    return mutate(projectId, (project) => {
+      const documentName = normalizeDocumentName(name);
+      if (project.documents.some((item) => item.name === documentName)) throw new Error('A document with this name already exists');
+      if (project.documents.length >= 40) throw new Error('This project has reached its document limit');
+      project.documents.push({
+        id: randomUUID(), name: documentName, content: String(content || '').slice(0, 20_000),
+        updatedAt: now(), committedAt: null, committedSha: null, committedBranch: null
+      });
+      addEvent(project, 'rules', `${documentName} added to project rules.`);
+    });
+  }
+
+  async function updateDocument(projectId, docId, updates = {}) {
+    return mutate(projectId, (project) => {
+      const document = project.documents.find((item) => item.id === docId);
+      if (!document) return null;
+      if (updates.name !== undefined) {
+        const documentName = normalizeDocumentName(updates.name);
+        if (documentName !== document.name && project.documents.some((item) => item.name === documentName)) throw new Error('A document with this name already exists');
+        document.name = documentName;
+        document.updatedAt = now();
+      }
+      if (updates.content !== undefined && updates.content !== document.content) {
+        document.content = String(updates.content).slice(0, 20_000);
+        document.updatedAt = now();
+      }
+      if (updates.committedAt !== undefined) document.committedAt = updates.committedAt;
+      if (updates.committedSha !== undefined) document.committedSha = updates.committedSha;
+      if (updates.committedBranch !== undefined) document.committedBranch = updates.committedBranch;
+    });
+  }
+
+  async function deleteDocument(projectId, docId) {
+    return mutate(projectId, (project) => {
+      const document = project.documents.find((item) => item.id === docId);
+      if (!document) return null;
+      project.documents = project.documents.filter((item) => item.id !== docId);
+      addEvent(project, 'rules', `${document.name} removed from project rules.`);
+    });
+  }
+
+  async function updateShipSettings(projectId, settings = {}) {
+    return mutate(projectId, (project) => {
+      project.shipSettings = {
+        vercelProjectId: String(settings.vercelProjectId ?? project.shipSettings.vercelProjectId ?? '').trim().slice(0, 120),
+        vercelTeamId: String(settings.vercelTeamId ?? project.shipSettings.vercelTeamId ?? '').trim().slice(0, 120)
+      };
+    });
+  }
+
   async function saveAgentRunPatch(projectId, runId, patch) {
     await initialize();
     await pool.query(
@@ -480,7 +572,8 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
     replaceReasoningProposals, resolveReasoningItem, addReasoningChallenge,
     createCheckpoint, restoreCheckpoint, mergeBranch,
     createAgentRun, getAgentRun, updateAgentRun, addAgentRunEvent, appendAgentRunEvents, listAgentRunEvents,
-    saveAgentRunPatch, getAgentRunPatch, updateProjectIntegration, updateProjectSettings,
+    saveAgentRunPatch, getAgentRunPatch, updateProjectIntegration, updateProjectSettings, updateShipSettings,
+    appendChatNode, updateChatNode, createDocument, updateDocument, deleteDocument,
     createAttentionItem, resolveAttentionItem,
     recoverInterruptedRuns: async () => 0,
     seedDemo: async () => {}

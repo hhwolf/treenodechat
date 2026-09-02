@@ -310,3 +310,34 @@ test('escapes glob metacharacters when integrating selected files', async (t) =>
   const apply = FakeSandbox.created[1].commands.find((command) => command.cmd === 'git' && command.args[0] === 'apply');
   assert.ok(apply.args.includes('--include=api/\\[slug\\].js'));
 });
+
+test('injects project rules into the agent prompt and commits documents via GitHub', async (t) => {
+  const store = setup(t);
+  const project = await store.createProject({ name: 'Rules hosted', repoPath: 'https://github.com/example/project', brief: 'Follow the rules.' });
+  const calls = [];
+  const responses = [
+    { status: 200, body: { object: { sha: 'head' } } },
+    { status: 404, body: {} },
+    { status: 201, body: { content: { sha: 'blobsha' }, commit: { sha: 'commitsha' } } }
+  ];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url, method: options.method || 'GET' });
+    const next = responses.shift();
+    return { ok: next.status < 300, status: next.status, json: async () => next.body };
+  };
+  const runtime = createSandboxRuntime(store, {
+    SandboxClass: FakeSandbox, openAIKey: 'openai-secret', githubToken: 'gh-token', allowWithoutVercelAuth: true, fetchImpl
+  });
+  await runtime.start(project.id, project.branches[0].id, 'Do something small.');
+  const prompt = FakeSandbox.created[0].files.find((file) => file.path.endsWith('prompt.txt')).content.toString('utf8');
+  assert.match(prompt, /Project rules/);
+  assert.match(prompt, /### CLAUDE\.md/);
+
+  const doc = project.documents[0];
+  const result = await runtime.commitDocument(project.id, doc.id, { message: 'Sync rules' });
+  assert.equal(result.commit.sha, 'commitsha');
+  const updated = await store.getProject(project.id);
+  assert.equal(updated.documents[0].committedSha, 'blobsha');
+  assert.equal(updated.integration.headCommit, 'commitsha');
+  assert.ok(calls.some((call) => call.method === 'PUT' && /contents\/CLAUDE\.md/.test(call.url)));
+});

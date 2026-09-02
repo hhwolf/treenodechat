@@ -1,5 +1,6 @@
 import { analyzeBranch, draftReasoning, draftSpec } from './spec.js';
 import { inspectRepository } from './repository.js';
+import { taskBranchName } from './store.js';
 
 const json = (response, status, payload) => {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -19,21 +20,13 @@ function apiError(message, status = 422) {
   return Object.assign(new Error(message), { status });
 }
 
-export function taskBranchName(task, existingNames = []) {
-  const base = String(task || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ').replace(/[.,;:!?]+$/, '').slice(0, 60) || 'Agent task';
-  const taken = new Set(existingNames.map((name) => String(name).toLowerCase()));
-  let candidate = base;
-  for (let suffix = 2; taken.has(candidate.toLowerCase()); suffix += 1) candidate = `${base} ${suffix}`;
-  return candidate;
-}
-
-export function createApiHandler(store, { agentRuntime, repositoryInspector = inspectRepository } = {}) {
+export function createApiHandler(store, { agentRuntime, repositoryInspector = inspectRepository, orchestrator, ship } = {}) {
   return async function apiHandler(request, response) {
     const url = new URL(request.url, 'http://threadline.local');
     if (!url.pathname.startsWith('/api/')) return false;
 
     try {
-      if (request.method === 'POST' || request.method === 'PATCH') {
+      if (['POST', 'PATCH', 'DELETE'].includes(request.method)) {
         const origin = request.headers.origin;
         if (origin) {
           let hostname = '';
@@ -44,7 +37,7 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
             return true;
           }
         }
-        if (!request.headers['content-type']?.startsWith('application/json')) {
+        if (request.method !== 'DELETE' && !request.headers['content-type']?.startsWith('application/json')) {
           json(response, 415, { error: 'Changes require application/json' });
           return true;
         }
@@ -287,6 +280,150 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         const body = await readBody(request);
         const run = await agentRuntime.verify(runVerifyMatch[1], runVerifyMatch[2], body);
         json(response, 202, { run, project: await store.getProject(runVerifyMatch[1]) });
+        return true;
+      }
+
+      const chatMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/chat$/);
+      if (chatMatch && request.method === 'POST') {
+        if (!orchestrator) {
+          json(response, 503, { error: 'Chat is not configured for this deployment' });
+          return true;
+        }
+        const body = await readBody(request);
+        const project = await store.getProject(chatMatch[1]);
+        if (!project) {
+          json(response, 404, { error: 'Project not found' });
+          return true;
+        }
+        const message = String(body.message || '').trim().slice(0, 8_000);
+        if (!message) throw apiError('Describe what you want to do');
+        if (body.directionId) {
+          const parent = project.chatNodes.find((node) => node.id === body.parentNodeId);
+          if (!parent?.directions?.some((direction) => direction.id === body.directionId)) throw apiError('Direction not found', 404);
+        }
+        const userNode = await store.appendChatNode(project.id, {
+          role: body.kind === 'run-update' ? 'notice' : 'user',
+          parentId: body.parentNodeId || null,
+          directionId: body.directionId || null,
+          content: message
+        });
+        const turn = await orchestrator.runChatTurn(project.id, userNode);
+        const assistantNode = await store.appendChatNode(project.id, {
+          id: turn.assistantNodeId,
+          role: 'assistant',
+          parentId: userNode.id,
+          content: turn.content,
+          directions: turn.directions,
+          actions: turn.actions,
+          engineBranchId: turn.engineBranchId
+        });
+        json(response, 200, { project: await store.getProject(project.id), userNode, assistantNode, source: turn.source });
+        return true;
+      }
+
+      const actionMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/chat\/nodes\/([^/]+)\/actions\/([^/]+)$/);
+      if (actionMatch && request.method === 'PATCH') {
+        const body = await readBody(request);
+        if (!['approved', 'dismissed'].includes(body.status)) throw apiError('Action status must be approved or dismissed');
+        const project = await store.getProject(actionMatch[1]);
+        const node = project?.chatNodes.find((item) => item.id === actionMatch[2]);
+        const action = node?.actions.find((item) => item.id === actionMatch[3]);
+        if (!action) {
+          json(response, 404, { error: 'Chat action not found' });
+          return true;
+        }
+        if (action.status !== 'needs_approval') throw apiError('Only actions awaiting approval can be resolved');
+        const actions = node.actions.map((item) => item.id === action.id ? { ...item, status: body.status } : item);
+        await store.updateChatNode(project.id, node.id, { actions });
+        json(response, 200, { project: await store.getProject(project.id) });
+        return true;
+      }
+
+      const shipRouteMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ship(?:\/(.*))?$/);
+      if (shipRouteMatch) {
+        const [, projectId, rest = ''] = shipRouteMatch;
+        if (!ship) {
+          json(response, 501, { error: 'Shipping is not configured for this deployment' });
+          return true;
+        }
+        const project = await store.getProject(projectId);
+        if (!project) {
+          json(response, 404, { error: 'Project not found' });
+          return true;
+        }
+        if (rest === '' && request.method === 'GET') {
+          json(response, 200, await ship.status(project));
+          return true;
+        }
+        if (rest === 'settings' && request.method === 'PATCH') {
+          const updated = await store.updateShipSettings(projectId, await readBody(request));
+          json(response, 200, { project: updated });
+          return true;
+        }
+        if (rest === 'pr' && request.method === 'POST') {
+          const pull = await ship.createPullRequest(project, await readBody(request));
+          json(response, 201, { pull });
+          return true;
+        }
+        const mergeMatch = rest.match(/^pr\/(\d+)\/merge$/);
+        if (mergeMatch && request.method === 'POST') {
+          await readBody(request);
+          json(response, 200, { result: await ship.mergePullRequest(project, mergeMatch[1]) });
+          return true;
+        }
+        if (rest === 'deploy' && request.method === 'POST') {
+          json(response, 201, { deployment: await ship.triggerDeployment(project, await readBody(request)) });
+          return true;
+        }
+        if (rest === 'rollback' && request.method === 'POST') {
+          const body = await readBody(request);
+          json(response, 200, { result: await ship.rollbackDeployment(project, body.deploymentId) });
+          return true;
+        }
+        if (rest === 'env' && request.method === 'GET') {
+          json(response, 200, { envs: await ship.listEnv(project) });
+          return true;
+        }
+        if (rest === 'env' && request.method === 'POST') {
+          json(response, 201, { result: await ship.createEnv(project, await readBody(request)) });
+          return true;
+        }
+        const envMatch = rest.match(/^env\/([^/]+)$/);
+        if (envMatch && request.method === 'DELETE') {
+          json(response, 200, { result: await ship.deleteEnv(project, envMatch[1]) });
+          return true;
+        }
+        json(response, 404, { error: 'Ship endpoint not found' });
+        return true;
+      }
+
+      const documentsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents$/);
+      if (documentsMatch && request.method === 'POST') {
+        const project = await store.createDocument(documentsMatch[1], await readBody(request));
+        json(response, project ? 201 : 404, project ? { project } : { error: 'Project not found' });
+        return true;
+      }
+
+      const documentCommitMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents\/([^/]+)\/commit$/);
+      if (documentCommitMatch && request.method === 'POST') {
+        if (!agentRuntime?.commitDocument) {
+          json(response, 501, { error: 'Committing rules to the repository is not supported by the configured agent runtime' });
+          return true;
+        }
+        const result = await agentRuntime.commitDocument(documentCommitMatch[1], documentCommitMatch[2], await readBody(request));
+        json(response, 200, result);
+        return true;
+      }
+
+      const documentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents\/([^/]+)$/);
+      if (documentMatch && request.method === 'PATCH') {
+        const project = await store.updateDocument(documentMatch[1], documentMatch[2], await readBody(request));
+        json(response, project ? 200 : 404, project ? { project } : { error: 'Document not found' });
+        return true;
+      }
+      if (documentMatch && request.method === 'DELETE') {
+        const project = await store.deleteDocument(documentMatch[1], documentMatch[2]);
+        json(response, project ? 200 : 404, project ? { project } : { error: 'Document not found' });
         return true;
       }
 

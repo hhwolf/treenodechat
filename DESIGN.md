@@ -1,16 +1,16 @@
-# Threadline V3 design direction
+# Threadline V4 design direction
 
 ## Product thesis
 
-Threadline is a persistent operating system for professional, AI-assisted coding projects. It replaces fragile conversation history with shared project state that humans and agents can inspect, branch, compare, merge, and recover.
+Threadline is a chat-first workspace for professional, AI-assisted coding projects — a version of the familiar assistant chat with dynamic versioning. The chat is the interface; the project state (intent, rules, runs, accepted code, decisions) is the durable substance underneath it. The conversation is a tree, not a transcript: real decisions fork, and every direction stays inspectable.
 
 The first users are senior engineers and technical solo founders doing multi-day work in an existing codebase.
 
 ## Magic moment
 
-A developer opens a repository, or returns days later, and immediately sees the objective, governing context, active branches, proposed changes, and next required action. The agent receives the same structured understanding without the developer retelling the project.
+A developer opens a project, or returns days later, and the chat plus its tree immediately show the objective, what was tried on each branch, what code was accepted, and the next open decision. Asking an open question yields 2–3 labeled directions with visible reasoning and a recommendation — choosing one forks the thread, and the road not taken remains one click away in the Tree tab.
 
-Before committing to a branch, Focus shows a small reviewable reasoning brief: plausible approaches, evidence, assumptions, counterpoints, and the next unresolved question. The AI drafts this structure, but interpretive state becomes durable only after human confirmation.
+Work happens through the same chat: the orchestrator model deploys isolated coding agents, checks their evidence, verifies with the project's tests, and integrates reviewed files — narrating each step with links to the real run cards rather than claiming unverified results.
 
 Projects may hold a bounded read-only repository snapshot containing project structure, selected documentation excerpts, and recent commits. Local mode also includes Git working-tree status. This grounds reasoning and branch analysis without exposing secret-like files. Focused coding agents operate separately in detached local Git worktrees or persistent Vercel Sandboxes, with their event stream and resulting diff attached to the corresponding Threadline branch. Users may explicitly accept whole files from completed runs into a persistent Threadline-owned integration branch — a dedicated local worktree, or the same `threadline/…` branch pushed to GitHub for hosted runs. Later runs start from that accepted head, making accepted code part of the project's durable context.
 
@@ -18,16 +18,14 @@ Threadline exposes shared working state, not hidden chain-of-thought: intent, as
 
 ## Interaction hierarchy
 
-The default interface contains only:
+Exactly four tabs:
 
-1. A compact project Focus.
-2. Project intent.
-3. Human Attention: only completed reviews, blockers, and decisions.
-4. The branch tree.
-5. The selected branch's current output, agent state, and next action.
-6. A compact current-understanding inspector on wide screens.
+1. **Chat** — the default and primary surface: messages, live agent-run cards, direction cards at open decisions, and approval cards for external actions. Fork from any message.
+2. **Tree** — the full conversation graph with explored/unexplored direction chips and run badges; clicking a node reopens that path in Chat.
+3. **Rules** — one obvious home for everything that governs the project: intent, the connected repository, rule documents (CLAUDE.md, skills, guidelines) with commit-to-repo sync, and the verify command. If a rule exists, it is defined here and injected everywhere.
+4. **Ship** — pull requests, deployments, rollbacks, and environment variables, each behind explicit typed confirmation.
 
-Context, recovery, and activity are grouped behind Advanced. Review controls appear only when a branch or reasoning item needs review. Threadline uses a graph-shaped model where it helps, but the base interface deliberately avoids a dense canvas.
+There is no dense canvas and no secondary navigation; run detail lives inline on the chat cards that produced it.
 
 ## Autonomy boundary
 
