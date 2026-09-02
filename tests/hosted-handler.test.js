@@ -34,7 +34,7 @@ test('reports hosted configuration without exposing secret values', async (t) =>
 
   assert.equal(response.status, 200);
   assert.equal(response.body.configured, true);
-  assert.deepEqual(response.body.configuration, { database: true, accessToken: true, openAI: true, github: false });
+  assert.deepEqual(response.body.configuration, { database: true, accessToken: true, openAI: true, github: false, vercel: false });
   assert.doesNotMatch(JSON.stringify(response.body), /access-secret|openai-secret|postgresql:\/\//);
 });
 

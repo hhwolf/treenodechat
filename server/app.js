@@ -20,7 +20,7 @@ function apiError(message, status = 422) {
   return Object.assign(new Error(message), { status });
 }
 
-export function createApiHandler(store, { agentRuntime, repositoryInspector = inspectRepository, orchestrator } = {}) {
+export function createApiHandler(store, { agentRuntime, repositoryInspector = inspectRepository, orchestrator, ship } = {}) {
   return async function apiHandler(request, response) {
     const url = new URL(request.url, 'http://threadline.local');
     if (!url.pathname.startsWith('/api/')) return false;
@@ -336,6 +336,64 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         const actions = node.actions.map((item) => item.id === action.id ? { ...item, status: body.status } : item);
         await store.updateChatNode(project.id, node.id, { actions });
         json(response, 200, { project: await store.getProject(project.id) });
+        return true;
+      }
+
+      const shipRouteMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/ship(?:\/(.*))?$/);
+      if (shipRouteMatch) {
+        const [, projectId, rest = ''] = shipRouteMatch;
+        if (!ship) {
+          json(response, 501, { error: 'Shipping is not configured for this deployment' });
+          return true;
+        }
+        const project = await store.getProject(projectId);
+        if (!project) {
+          json(response, 404, { error: 'Project not found' });
+          return true;
+        }
+        if (rest === '' && request.method === 'GET') {
+          json(response, 200, await ship.status(project));
+          return true;
+        }
+        if (rest === 'settings' && request.method === 'PATCH') {
+          const updated = await store.updateShipSettings(projectId, await readBody(request));
+          json(response, 200, { project: updated });
+          return true;
+        }
+        if (rest === 'pr' && request.method === 'POST') {
+          const pull = await ship.createPullRequest(project, await readBody(request));
+          json(response, 201, { pull });
+          return true;
+        }
+        const mergeMatch = rest.match(/^pr\/(\d+)\/merge$/);
+        if (mergeMatch && request.method === 'POST') {
+          await readBody(request);
+          json(response, 200, { result: await ship.mergePullRequest(project, mergeMatch[1]) });
+          return true;
+        }
+        if (rest === 'deploy' && request.method === 'POST') {
+          json(response, 201, { deployment: await ship.triggerDeployment(project, await readBody(request)) });
+          return true;
+        }
+        if (rest === 'rollback' && request.method === 'POST') {
+          const body = await readBody(request);
+          json(response, 200, { result: await ship.rollbackDeployment(project, body.deploymentId) });
+          return true;
+        }
+        if (rest === 'env' && request.method === 'GET') {
+          json(response, 200, { envs: await ship.listEnv(project) });
+          return true;
+        }
+        if (rest === 'env' && request.method === 'POST') {
+          json(response, 201, { result: await ship.createEnv(project, await readBody(request)) });
+          return true;
+        }
+        const envMatch = rest.match(/^env\/([^/]+)$/);
+        if (envMatch && request.method === 'DELETE') {
+          json(response, 200, { result: await ship.deleteEnv(project, envMatch[1]) });
+          return true;
+        }
+        json(response, 404, { error: 'Ship endpoint not found' });
         return true;
       }
 

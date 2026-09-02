@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { createApiHandler } from './app.js';
 import { createAgentRuntime } from './agent-runtime.js';
 import { createOrchestrator } from './orchestrator.js';
+import { createShip } from './ship.js';
 import { createStore } from './store.js';
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)));
@@ -15,7 +16,8 @@ const store = createStore(dbPath, { seed: process.env.THREADLINE_EMPTY !== '1' }
 const interruptedRuns = store.recoverInterruptedRuns();
 const agentRuntime = createAgentRuntime(store, { stateRoot: dirname(dbPath) });
 const orchestrator = createOrchestrator(store, { agentRuntime });
-const handleApi = createApiHandler(store, { agentRuntime, orchestrator });
+const ship = createShip({});
+const handleApi = createApiHandler(store, { agentRuntime, orchestrator, ship });
 let vite;
 
 if (!production) {
