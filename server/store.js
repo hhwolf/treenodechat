@@ -80,6 +80,14 @@ export function normalizeDocumentName(name) {
   return value;
 }
 
+export function taskBranchName(task, existingNames = []) {
+  const base = String(task || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ').replace(/[.,;:!?]+$/, '').slice(0, 60) || 'Agent task';
+  const taken = new Set(existingNames.map((name) => String(name).toLowerCase()));
+  let candidate = base;
+  for (let suffix = 2; taken.has(candidate.toLowerCase()); suffix += 1) candidate = `${base} ${suffix}`;
+  return candidate;
+}
+
 export const defaultDocuments = (name, brief, timestamp) => ([{
   id: randomUUID(),
   name: 'CLAUDE.md',
@@ -473,7 +481,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     const status = updates.status ?? current.status;
     const startedAt = updates.startedAt ?? current.started_at ?? (status === 'running' ? timestamp : null);
     const endedAt = updates.endedAt ?? current.ended_at ?? (['completed', 'failed', 'cancelled'].includes(status) ? timestamp : null);
-    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, sandbox_name = ?, command_id = ?, event_cursor = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, integration_json = ?, verification_json = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
+    db.prepare(`UPDATE agent_runs SET status = ?, worktree_path = ?, base_commit = ?, session_id = ?, pid = ?, sandbox_name = ?, command_id = ?, node_id = ?, event_cursor = ?, exit_code = ?, summary = ?, files_json = ?, diff_stat = ?, diff_text = ?, integration_json = ?, verification_json = ?, started_at = ?, ended_at = ?, updated_at = ? WHERE id = ? AND project_id = ?`).run(
       status,
       updates.worktreePath ?? current.worktree_path,
       updates.baseCommit ?? current.base_commit,
@@ -481,6 +489,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       updates.pid === undefined ? current.pid : updates.pid,
       updates.sandboxName ?? current.sandbox_name,
       updates.commandId ?? current.command_id,
+      updates.nodeId ?? current.node_id,
       updates.eventCursor ?? current.event_cursor,
       updates.exitCode === undefined ? current.exit_code : updates.exitCode,
       updates.summary ?? current.summary,

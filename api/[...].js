@@ -2,6 +2,7 @@ import { createApiHandler } from '../server/app.js';
 import { authorizeRequest } from '../server/auth.js';
 import { createCloudStore } from '../server/cloud-store.js';
 import { inspectGitHubRepository } from '../server/github-repository.js';
+import { createOrchestrator } from '../server/orchestrator.js';
 import { createSandboxRuntime } from '../server/sandbox-runtime.js';
 
 export const config = { maxDuration: 300 };
@@ -26,10 +27,11 @@ function getResources() {
   if (resources) return resources;
   const store = createCloudStore();
   const agentRuntime = createSandboxRuntime(store);
+  const orchestrator = createOrchestrator(store, { agentRuntime });
   resources = {
     store,
     agentRuntime,
-    handler: createApiHandler(store, { agentRuntime, repositoryInspector: inspectGitHubRepository })
+    handler: createApiHandler(store, { agentRuntime, repositoryInspector: inspectGitHubRepository, orchestrator })
   };
   return resources;
 }

@@ -1,5 +1,6 @@
 import { analyzeBranch, draftReasoning, draftSpec } from './spec.js';
 import { inspectRepository } from './repository.js';
+import { taskBranchName } from './store.js';
 
 const json = (response, status, payload) => {
   response.writeHead(status, { 'content-type': 'application/json; charset=utf-8' });
@@ -19,15 +20,7 @@ function apiError(message, status = 422) {
   return Object.assign(new Error(message), { status });
 }
 
-export function taskBranchName(task, existingNames = []) {
-  const base = String(task || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ').replace(/[.,;:!?]+$/, '').slice(0, 60) || 'Agent task';
-  const taken = new Set(existingNames.map((name) => String(name).toLowerCase()));
-  let candidate = base;
-  for (let suffix = 2; taken.has(candidate.toLowerCase()); suffix += 1) candidate = `${base} ${suffix}`;
-  return candidate;
-}
-
-export function createApiHandler(store, { agentRuntime, repositoryInspector = inspectRepository } = {}) {
+export function createApiHandler(store, { agentRuntime, repositoryInspector = inspectRepository, orchestrator } = {}) {
   return async function apiHandler(request, response) {
     const url = new URL(request.url, 'http://threadline.local');
     if (!url.pathname.startsWith('/api/')) return false;
@@ -287,6 +280,62 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         const body = await readBody(request);
         const run = await agentRuntime.verify(runVerifyMatch[1], runVerifyMatch[2], body);
         json(response, 202, { run, project: await store.getProject(runVerifyMatch[1]) });
+        return true;
+      }
+
+      const chatMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/chat$/);
+      if (chatMatch && request.method === 'POST') {
+        if (!orchestrator) {
+          json(response, 503, { error: 'Chat is not configured for this deployment' });
+          return true;
+        }
+        const body = await readBody(request);
+        const project = await store.getProject(chatMatch[1]);
+        if (!project) {
+          json(response, 404, { error: 'Project not found' });
+          return true;
+        }
+        const message = String(body.message || '').trim().slice(0, 8_000);
+        if (!message) throw apiError('Describe what you want to do');
+        if (body.directionId) {
+          const parent = project.chatNodes.find((node) => node.id === body.parentNodeId);
+          if (!parent?.directions?.some((direction) => direction.id === body.directionId)) throw apiError('Direction not found', 404);
+        }
+        const userNode = await store.appendChatNode(project.id, {
+          role: body.kind === 'run-update' ? 'notice' : 'user',
+          parentId: body.parentNodeId || null,
+          directionId: body.directionId || null,
+          content: message
+        });
+        const turn = await orchestrator.runChatTurn(project.id, userNode);
+        const assistantNode = await store.appendChatNode(project.id, {
+          id: turn.assistantNodeId,
+          role: 'assistant',
+          parentId: userNode.id,
+          content: turn.content,
+          directions: turn.directions,
+          actions: turn.actions,
+          engineBranchId: turn.engineBranchId
+        });
+        json(response, 200, { project: await store.getProject(project.id), userNode, assistantNode, source: turn.source });
+        return true;
+      }
+
+      const actionMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/chat\/nodes\/([^/]+)\/actions\/([^/]+)$/);
+      if (actionMatch && request.method === 'PATCH') {
+        const body = await readBody(request);
+        if (!['approved', 'dismissed'].includes(body.status)) throw apiError('Action status must be approved or dismissed');
+        const project = await store.getProject(actionMatch[1]);
+        const node = project?.chatNodes.find((item) => item.id === actionMatch[2]);
+        const action = node?.actions.find((item) => item.id === actionMatch[3]);
+        if (!action) {
+          json(response, 404, { error: 'Chat action not found' });
+          return true;
+        }
+        if (action.status !== 'needs_approval') throw apiError('Only actions awaiting approval can be resolved');
+        const actions = node.actions.map((item) => item.id === action.id ? { ...item, status: body.status } : item);
+        await store.updateChatNode(project.id, node.id, { actions });
+        json(response, 200, { project: await store.getProject(project.id) });
         return true;
       }
 

@@ -294,3 +294,62 @@ test('manages rules documents through the API', async (t) => {
   const blocked = await bare.request(`/api/projects/${bareProject.id}/documents/${bareProject.documents[0].id}/commit`, { method: 'POST', body: '{}' });
   assert.equal(blocked.response.status, 501);
 });
+
+test('runs a chat turn, persists the tree, and gates action approvals', async (t) => {
+  const store = createStore(':memory:');
+  const orchestrator = {
+    runChatTurn: async (projectId, userNode) => ({
+      source: 'model',
+      assistantNodeId: undefined,
+      content: `Reply to: ${userNode.content}`,
+      directions: [{ label: 'Technical', summary: 'Go deep.' }, { label: 'Practical', summary: 'Ship now.', recommended: true }],
+      actions: [{ tool: 'trigger_deployment', args: { ref: 'main' }, status: 'needs_approval' }],
+      engineBranchId: null
+    })
+  };
+  const handler = createApiHandler(store, { orchestrator });
+  const server = createServer(async (request, response) => { if (!(await handler(request, response))) { response.writeHead(404); response.end(); } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => { await new Promise((resolve) => server.close(resolve)); store.close(); });
+  const request = async (path, options = {}) => {
+    const response = await fetch(`${base}${path}`, { ...options, headers: options.body ? { 'content-type': 'application/json' } : {} });
+    return { response, payload: await response.json() };
+  };
+
+  const project = store.createProject({ name: 'Chat API', brief: 'Talk to the orchestrator' });
+  const first = await request(`/api/projects/${project.id}/chat`, { method: 'POST', body: JSON.stringify({ message: 'Hello' }) });
+  assert.equal(first.response.status, 200);
+  assert.equal(first.payload.userNode.role, 'user');
+  assert.equal(first.payload.assistantNode.parentId, first.payload.userNode.id);
+  assert.equal(first.payload.assistantNode.directions.length, 2);
+  assert.equal(first.payload.project.chatNodes.length, 2);
+
+  const direction = first.payload.assistantNode.directions[1];
+  const picked = await request(`/api/projects/${project.id}/chat`, {
+    method: 'POST', body: JSON.stringify({ parentNodeId: first.payload.assistantNode.id, directionId: direction.id, message: 'Go practical' })
+  });
+  assert.equal(picked.payload.userNode.directionId, direction.id);
+
+  const badDirection = await request(`/api/projects/${project.id}/chat`, {
+    method: 'POST', body: JSON.stringify({ parentNodeId: first.payload.assistantNode.id, directionId: 'missing', message: 'x' })
+  });
+  assert.equal(badDirection.response.status, 404);
+
+  const action = first.payload.assistantNode.actions[0];
+  const approved = await request(`/api/projects/${project.id}/chat/nodes/${first.payload.assistantNode.id}/actions/${action.id}`, {
+    method: 'PATCH', body: JSON.stringify({ status: 'approved' })
+  });
+  assert.equal(approved.response.status, 200);
+  const updatedNode = approved.payload.project.chatNodes.find((node) => node.id === first.payload.assistantNode.id);
+  assert.equal(updatedNode.actions[0].status, 'approved');
+  const again = await request(`/api/projects/${project.id}/chat/nodes/${first.payload.assistantNode.id}/actions/${action.id}`, {
+    method: 'PATCH', body: JSON.stringify({ status: 'dismissed' })
+  });
+  assert.equal(again.response.status, 422);
+
+  const noOrchestrator = await setup(t);
+  const bareProject = noOrchestrator.store.createProject({ name: 'No chat', brief: 'x' });
+  const blocked = await noOrchestrator.request(`/api/projects/${bareProject.id}/chat`, { method: 'POST', body: JSON.stringify({ message: 'hi' }) });
+  assert.equal(blocked.response.status, 503);
+});
