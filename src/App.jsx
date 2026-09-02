@@ -67,11 +67,11 @@ const onboardingSteps = [
     action: 'Fork when two approaches deserve independent evidence.'
   },
   {
-    target: 'agent-runs',
-    view: 'branch',
+    target: 'composer',
+    view: 'focus',
     eyebrow: 'Seven · Execute',
     title: 'Supervise real agent work',
-    description: 'Start Codex in isolation, watch evidence arrive, pause or cancel safely, and send only decisions that need you to Attention.',
+    description: 'Describe a task here and press Run — Threadline creates an isolated branch, starts Codex, and streams the evidence back for review.',
     detail: 'Hosted runs use Vercel Sandboxes; local runs use detached Git worktrees. Changes stay review-only until a human chooses what crosses over.',
     action: 'Give each run one concrete, verifiable objective.'
   },
@@ -91,9 +91,21 @@ const onboardingSteps = [
     title: 'Detail is available when you need it',
     description: 'Advanced opens the context registry, recovery points, and activity trail. They stay out of the way until the project needs closer inspection.',
     detail: 'Context controls what agents can receive. Recovery checkpoints make material merges reversible. Activity records decisions without recreating a transcript.',
-    action: 'You are ready to work from Focus.'
+    action: 'You are ready — describe a task and press Run.'
   }
 ];
+
+const TASK_LIMIT = 4000;
+
+function effectiveVerifyCommand(project) {
+  if (project.verifyCommand) return project.verifyCommand;
+  const excerpt = (project.repository?.excerpts || []).find((item) => item.path === 'package.json' || item.path.endsWith('/package.json'));
+  if (!excerpt) return '';
+  try {
+    const scripts = JSON.parse(excerpt.content).scripts || {};
+    return scripts.test && !/no test specified/i.test(scripts.test) ? 'npm test' : '';
+  } catch { return ''; }
+}
 
 const icons = {
   target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3"/>',
@@ -429,30 +441,79 @@ function BranchModal({ project, parentId, initial, onClose, onCreate }) {
   </Modal>;
 }
 
-function AgentRunModal({ branch, adapter, onClose, onStart }) {
-  const [task, setTask] = useState(branch.purpose || `Complete the focused work for ${branch.name} and leave the result ready for review.`);
+function TaskComposer({ project, adapter, targetBranch, composerRef, onRun, onConnect }) {
+  const [task, setTask] = useState('');
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState('');
+  const needsRepository = !project.repoPath;
+  const isolation = adapter?.safety === 'isolated-sandbox' ? 'isolated Vercel Sandbox' : 'isolated Git worktree';
+  const hint = needsRepository ? 'Connect a GitHub repository so an agent has code to work on.'
+    : !adapter?.available ? (adapter?.error || 'Start Threadline with a supported coding-agent adapter.')
+    : `${targetBranch ? `Runs on ${targetBranch.name}` : 'Runs in a new branch named from your task'} · changes stay review-only in an ${isolation}.`;
   const submit = async (event) => {
     event.preventDefault();
+    if (!task.trim() || starting || needsRepository || !adapter?.available || task.length > TASK_LIMIT) return;
     setStarting(true);
     setError('');
-    try { await onStart(task); } catch (caught) { setError(caught.message); setStarting(false); }
+    try {
+      await onRun(task.trim(), targetBranch?.id);
+      setTask('');
+    } catch (caught) { setError(caught.message); }
+    finally { setStarting(false); }
   };
-  return <Modal title={`Run an agent on ${branch.name}`} description="Give the agent one concrete, reviewable objective." onClose={onClose}>
-    <form className="modal-form" onSubmit={submit}>
-      <div className={`adapter-banner ${adapter?.available ? 'available' : 'unavailable'}`}>
-        <span><Icon name="terminal" /></span>
-        <div><strong>{adapter?.name || 'Coding agent unavailable'}</strong><small>{adapter?.available ? `${adapter.version || 'Ready'} · isolated worktree` : adapter?.error || 'Start Threadline with a supported coding-agent adapter.'}</small></div>
+  return <section className="task-composer" data-tour="composer">
+    <form onSubmit={submit}>
+      <textarea
+        ref={composerRef}
+        rows={2}
+        value={task}
+        aria-label="Agent task"
+        placeholder="Describe one concrete task for the agent — Threadline handles the branch."
+        onChange={(event) => { setError(''); setTask(event.target.value); }}
+        onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') submit(event); }}
+      />
+      <div className="composer-footer">
+        <small className={`composer-hint ${needsRepository || !adapter?.available ? 'blocked' : ''}`}>{hint}</small>
+        <div className="composer-actions">
+          {task.length > TASK_LIMIT * 0.8 && <span className={`char-counter ${task.length > TASK_LIMIT ? 'over' : ''}`}>{task.length} / {TASK_LIMIT}</span>}
+          {needsRepository
+            ? <Button type="button" variant="primary" onClick={onConnect}>Connect repository</Button>
+            : <Button type="submit" variant="primary" icon="play" disabled={starting || !adapter?.available || !task.trim() || task.length > TASK_LIMIT}>{starting ? 'Starting…' : `Run with ${adapter?.name || 'Codex'}`}</Button>}
+        </div>
       </div>
-      <Field as="textarea" label="Agent task" hint="Keep it narrow enough to verify in one run." required autoFocus value={task} onChange={(event) => setTask(event.target.value)} />
-      <p className="safety-note"><Icon name="shield" /><span>{adapter?.safety === 'isolated-sandbox'
-        ? 'Threadline creates an isolated Vercel Sandbox from the repository. Agent network access is restricted to OpenAI, and changes remain review-only.'
-        : 'Threadline creates an isolated Git worktree from committed HEAD. The agent cannot edit your active checkout, and changes remain review-only.'}</span></p>
       {error && <p className="form-error" role="alert">{error}</p>}
-      <footer><Button type="button" onClick={onClose}>Cancel</Button><Button type="submit" variant="primary" icon="play" disabled={starting || !adapter?.available}>{starting ? 'Starting…' : 'Start isolated run'}</Button></footer>
     </form>
-  </Modal>;
+  </section>;
+}
+
+function VerifyRow({ run, verifyCommand, onVerify, onSetVerifyCommand }) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(verifyCommand);
+  const [busy, setBusy] = useState(false);
+  const verification = run.verification;
+  const running = verification?.status === 'running';
+  return <div className="verify-row">
+    <div className="verify-main">
+      <Button icon="play" disabled={running || busy || !verifyCommand} onClick={async () => { setBusy(true); try { await onVerify(run); } finally { setBusy(false); } }}>
+        {running ? 'Verifying…' : verification?.status ? 'Verify again' : 'Verify'}
+      </Button>
+      {verifyCommand ? <code>{verifyCommand}</code> : <small>Add a test script to package.json or set a verify command.</small>}
+      <button type="button" className="verify-edit-toggle" onClick={() => { setDraft(verifyCommand); setEditing(!editing); }}>{verifyCommand ? 'Change' : 'Set command'}</button>
+      {verification?.status && !running && <span className={`verify-badge ${verification.status}`}>
+        {verification.status === 'passed' ? `Tests passed${verification.durationMs ? ` · ${Math.round(verification.durationMs / 1000)}s` : ''}`
+          : verification.status === 'failed' ? `Verification failed · exit ${verification.exitCode}`
+          : 'Verification error'}
+      </span>}
+    </div>
+    {editing && <form className="verify-edit" onSubmit={async (event) => {
+      event.preventDefault();
+      setBusy(true);
+      try { await onSetVerifyCommand(draft); setEditing(false); } finally { setBusy(false); }
+    }}>
+      <input value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="npm test" aria-label="Verify command" />
+      <Button type="submit" variant="primary" disabled={busy}>Save</Button>
+    </form>}
+  </div>;
 }
 
 function ContextModal({ project, selectedBranchId, onClose, onCreate }) {
@@ -630,11 +691,11 @@ function IntentView({ project, onSave, onDraft }) {
 
 const activeRunStatuses = new Set(['queued', 'running', 'paused']);
 
-function AgentRunPanel({ run, adapter, projectIntegration, onStart, onControl, onIntegrate }) {
+function AgentRunPanel({ run, adapter, projectIntegration, verifyCommand, onStart, onControl, onIntegrate, onVerify, onSetVerifyCommand }) {
   const [expandedDiff, setExpandedDiff] = useState(false);
   if (!run) return <section className="agent-panel agent-empty" data-tour="agent-runs">
     <div className="agent-empty-copy"><span className="agent-mark"><Icon name="terminal" /></span><div><span className="eyebrow">Agent execution</span><h2>Turn this branch into supervised work</h2><p>Codex works in an isolated Git worktree while Threadline keeps progress, evidence, and control visible.</p></div></div>
-    <Button variant="primary" icon="play" onClick={onStart} disabled={!adapter?.available}>Run with {adapter?.name || 'Codex'}</Button>
+    <div className="agent-empty-actions"><Button variant="primary" icon="play" onClick={onStart} disabled={!adapter?.available}>Run with {adapter?.name || 'Codex'}</Button>{!adapter?.available && <small className="composer-hint blocked" role="alert">{adapter?.error || 'Start Threadline with a supported coding-agent adapter.'}</small>}</div>
   </section>;
 
   const canPause = run.status === 'running';
@@ -651,6 +712,7 @@ function AgentRunPanel({ run, adapter, projectIntegration, onStart, onControl, o
         {!canCancel && <Button icon="play" onClick={onStart}>Run again</Button>}
       </div>
     </header>
+    {run.status === 'completed' && <VerifyRow run={run} verifyCommand={verifyCommand} onVerify={onVerify} onSetVerifyCommand={onSetVerifyCommand} />}
     <div className="run-layout">
       <div className="run-events" aria-label="Agent event stream">
         {(run.events || []).length ? run.events.map((event) => <div className="run-event" key={event.id}><span></span><div><strong>{event.kind.replaceAll('_', ' ')}</strong><p>{event.message}</p><small>{new Date(event.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</small></div></div>) : <p className="quiet-empty">Waiting for the first agent event…</p>}
@@ -678,11 +740,13 @@ function AgentRunPanel({ run, adapter, projectIntegration, onStart, onControl, o
   </section>;
 }
 
-function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork, onMerge, onAnalyze, onStartAgent, onControlAgent, onIntegrate }) {
+function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork, onMerge, onAnalyze, onStartAgent, onControlAgent, onIntegrate, onVerify, onSetVerifyCommand }) {
   const [analyzing, setAnalyzing] = useState(false);
+  const [shownRunId, setShownRunId] = useState(null);
+  useEffect(() => setShownRunId(null), [branch.id]);
   const parent = project.branches.find((item) => item.id === branch.parentId);
   const changes = branch.output.changes || [];
-  const latestRun = runs[0];
+  const latestRun = runs.find((run) => run.id === shownRunId) || runs[0];
   const transition = branch.status === 'ready' ? { label: 'Start work', status: 'active' } : branch.status === 'active' ? { label: 'Send to review', status: 'review' } : null;
   return <article className="branch-view">
     <div className="view-heading branch-heading"><div><span className="eyebrow">{parent ? `Forked from ${parent.name}` : 'Main branch'}</span><h1>{branch.name}</h1><p>{branch.purpose || 'No branch purpose has been written yet.'}</p></div><div><Button variant="primary" icon="spark" disabled={analyzing} onClick={async () => { setAnalyzing(true); try { await onAnalyze(); } finally { setAnalyzing(false); } }}>{analyzing ? 'Analyzing…' : changes.length ? 'Re-analyze' : 'Analyze branch'}</Button>{transition && <Button onClick={() => onUpdate({ status: transition.status })}>{transition.label}</Button>}<Button icon="branch" onClick={onFork}>Fork</Button></div></div>
@@ -690,7 +754,14 @@ function BranchView({ project, branch, contexts, runs, adapter, onUpdate, onFork
       <section className="output-card"><header><div><span className={`status-pill ${branch.status}`}>{branch.status}</span><h2>Current output</h2></div><span className="updated">Updated {new Date(branch.updatedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span></header><p>{branch.output.summary || 'This branch has not produced an output yet.'}</p></section>
       <section className="understanding-card"><span className="eyebrow">Shared understanding</span><strong>{contexts.length} context items available</strong><p>{contexts.some((item) => item.sensitivity !== 'shared') ? 'Private context is excluded from agents.' : 'Every listed item is available to this branch.'}</p></section>
     </div>
-    <AgentRunPanel run={latestRun} adapter={adapter} projectIntegration={project.integration} onStart={onStartAgent} onControl={onControlAgent} onIntegrate={onIntegrate} />
+    <AgentRunPanel run={latestRun} adapter={adapter} projectIntegration={project.integration} verifyCommand={effectiveVerifyCommand(project)} onStart={onStartAgent} onControl={onControlAgent} onIntegrate={onIntegrate} onVerify={onVerify} onSetVerifyCommand={onSetVerifyCommand} />
+    {runs.length > 1 && <details className="previous-runs"><summary>{runs.length - 1} other run{runs.length === 2 ? '' : 's'} on this branch</summary>
+      <div className="previous-run-list">{runs.filter((run) => run.id !== latestRun.id).map((run) => <button key={run.id} type="button" onClick={() => setShownRunId(run.id)}>
+        <span className={`run-status ${run.status}`}><i></i>{run.status}</span>
+        <strong>{run.task.length > 90 ? `${run.task.slice(0, 90)}…` : run.task}</strong>
+        <small>{new Date(run.createdAt).toLocaleString()}</small>
+      </button>)}</div>
+    </details>}
     <section className="changes-section"><header><div><span className="eyebrow">Reviewable findings</span><h2>Proposed findings</h2></div>{branch.parentId && changes.length > 0 && branch.status !== 'merged' && <Button icon="compare" onClick={onMerge}>Compare findings</Button>}</header>
       {changes.length ? <div className="proposed-changes">{changes.map((change) => <div className="proposed-change" key={change.id}><span className="change-mark"><Icon name="check" /></span><div><strong>{change.title}</strong><p>{change.detail}</p>{change.mergedFrom && <small>Merged from another branch</small>}</div></div>)}</div> : <div className="empty-state"><div className="empty-graphic"><Icon name="branch" size={24} /></div><strong>No proposed changes yet</strong><p>Start the branch after its purpose and inherited context look right.</p></div>}
     </section>
@@ -786,6 +857,7 @@ export function App() {
   const [integrationRunId, setIntegrationRunId] = useState(null);
   const [health, setHealth] = useState(null);
   const [needsAccess, setNeedsAccess] = useState(false);
+  const composerRef = useRef(null);
 
   const notify = (message) => {
     setToast(message);
@@ -838,7 +910,7 @@ export function App() {
   };
 
   useEffect(() => {
-    const hasActiveRun = project?.agentRuns?.some((run) => activeRunStatuses.has(run.status));
+    const hasActiveRun = project?.agentRuns?.some((run) => activeRunStatuses.has(run.status) || run.verification?.status === 'running');
     if (!hasActiveRun) return undefined;
     const interval = window.setInterval(async () => {
       try {
@@ -847,7 +919,7 @@ export function App() {
       } catch { /* A transient poll failure should not interrupt the workspace. */ }
     }, 1200);
     return () => window.clearInterval(interval);
-  }, [project?.id, project?.agentRuns?.map((run) => `${run.id}:${run.status}`).join('|')]);
+  }, [project?.id, project?.agentRuns?.map((run) => `${run.id}:${run.status}:${run.verification?.status || ''}`).join('|')]);
 
   useEffect(() => {
     if (!tourOpen || !project) return;
@@ -916,6 +988,31 @@ export function App() {
     setTourOpen(true);
   };
 
+  const focusComposer = () => {
+    composerRef.current?.focus();
+    composerRef.current?.scrollIntoView({ block: 'nearest' });
+  };
+
+  const runTask = async (task, branchId) => {
+    const result = await api.runTask(project.id, branchId ? { task, branchId } : { task });
+    applyProject(result.project, `${adapter?.name || 'Agent'} started in isolation`);
+    setSelection({ type: 'branch', id: result.run.branchId });
+  };
+
+  const verifyRun = async (run) => {
+    try {
+      const result = await api.verifyAgentRun(project.id, run.id);
+      applyProject(result.project, 'Verification started');
+    } catch (error) { notify(error.message); }
+  };
+
+  const saveVerifyCommand = async (value) => {
+    try {
+      const result = await api.updateProjectSettings(project.id, { verifyCommand: value });
+      applyProject(result.project, value.trim() ? 'Verify command saved' : 'Verify command cleared');
+    } catch (error) { notify(error.message); }
+  };
+
   const createBranch = async (form) => {
     const result = await api.createBranch(project.id, form);
     const branch = result.project.branches.at(-1);
@@ -932,7 +1029,7 @@ export function App() {
     if (selection.type === 'context') return <ContextView project={project} onAdd={() => setModal('context')} />;
     if (selection.type === 'recovery') return <RecoveryView project={project} onCheckpoint={async () => applyProject((await api.createCheckpoint(project.id, `Manual checkpoint ${project.checkpoints.length + 1}`)).project, 'Checkpoint created')} onRestore={async (checkpoint) => applyProject((await api.restoreCheckpoint(project.id, checkpoint.id)).project, `${checkpoint.name} restored`)} />;
     if (selection.type === 'activity') return <ActivityView project={project} />;
-    if (selectedBranch) return <BranchView project={project} branch={selectedBranch} contexts={contexts} runs={project.agentRuns.filter((run) => run.branchId === selectedBranch.id)} adapter={adapter} onUpdate={async (updates) => applyProject((await api.updateBranch(project.id, selectedBranch.id, updates)).project, `${selectedBranch.name} moved to ${updates.status}`)} onFork={() => { setBranchDraft(null); setModal('branch'); }} onMerge={() => setModal('merge')} onAnalyze={async () => { try { const result = await api.analyzeBranch(project.id, selectedBranch.id); applyProject(result.project, result.source === 'model' ? 'Branch analyzed with your configured model' : 'Branch analyzed locally'); } catch (error) { notify(error.message); } }} onStartAgent={() => setModal('agent')} onControlAgent={async (run, action) => { try { const result = await api.controlAgentRun(project.id, run.id, action); applyProject(result.project, action === 'cancel' ? 'Cancellation requested' : `Agent ${action}d`); } catch (error) { notify(error.message); } }} onIntegrate={(run) => { setIntegrationRunId(run.id); setModal('integrate'); }} />;
+    if (selectedBranch) return <BranchView project={project} branch={selectedBranch} contexts={contexts} runs={project.agentRuns.filter((run) => run.branchId === selectedBranch.id)} adapter={adapter} onUpdate={async (updates) => applyProject((await api.updateBranch(project.id, selectedBranch.id, updates)).project, `${selectedBranch.name} moved to ${updates.status}`)} onFork={() => { setBranchDraft(null); setModal('branch'); }} onMerge={() => setModal('merge')} onAnalyze={async () => { try { const result = await api.analyzeBranch(project.id, selectedBranch.id); applyProject(result.project, result.source === 'model' ? 'Branch analyzed with your configured model' : 'Branch analyzed locally'); } catch (error) { notify(error.message); } }} onStartAgent={focusComposer} onControlAgent={async (run, action) => { try { const result = await api.controlAgentRun(project.id, run.id, action); applyProject(result.project, action === 'cancel' ? 'Cancellation requested' : `Agent ${action}d`); } catch (error) { notify(error.message); } }} onIntegrate={(run) => { setIntegrationRunId(run.id); setModal('integrate'); }} onVerify={verifyRun} onSetVerifyCommand={saveVerifyCommand} />;
     return null;
   };
 
@@ -944,16 +1041,15 @@ export function App() {
   return <div className="app-shell">
     <header className="topbar"><div className="brand-lockup"><div className="brand-mark"><span></span><span></span><span></span></div><strong>Threadline</strong></div><label className="project-select" data-tour="project-switcher"><span className="sr-only">Project</span><select value={project.id} onChange={async (event) => { setSelection({ type: 'focus', id: null }); setInspectedReasoningId(null); const result = await api.getProject(event.target.value); setProject(result.project); }}><option value={project.id}>{project.name}</option>{projects.filter((item) => item.id !== project.id).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><small>{project.repoPath || 'No repository selected'}</small></label><div className="top-search"><input aria-label="Filter branches" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="Filter branches…" /></div><div className="top-actions"><span className="local-state"><i></i>{health?.mode === 'cloud' ? 'Saved to cloud' : 'Saved locally'}</span><Button onClick={startTour} icon="spark">Tour</Button><Button onClick={() => setModal('project')} icon="plus">New project</Button></div></header>
     <aside className="sidebar"><div className="sidebar-label"><span>Project</span></div><nav aria-label="Project navigation"><button data-tour="focus" className={`nav-row ${selection.type === 'focus' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'focus', id: null })}><Icon name="spark" /><span className="row-copy"><strong>Focus</strong><small>What needs thinking</small></span></button><button data-tour="intent" className={`nav-row ${selection.type === 'intent' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'intent', id: null })}><Icon name="target" /><span className="row-copy"><strong>Intent</strong><small>What good looks like</small></span></button><button className={`nav-row ${selection.type === 'attention' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'attention', id: null })}><Icon name="inbox" /><span className="row-copy"><strong>Attention</strong><small>Only what needs you</small></span>{project.attentionItems.filter((item) => item.status === 'open').length > 0 && <span className="nav-badge">{project.attentionItems.filter((item) => item.status === 'open').length}</span>}</button><div className="branch-navigation" data-tour="branches"><div className="nav-section-heading"><span>Branches</span><button aria-label="Add branch" onClick={() => { setBranchDraft(null); setModal('branch'); }}><Icon name="plus" /></button></div><BranchTree project={project} selectedId={selection.type === 'branch' ? selection.id : null} filter={filter} onSelect={(id) => setSelection({ type: 'branch', id })} /></div></nav><div className="sidebar-bottom" data-tour="advanced"><button className="advanced-toggle" onClick={() => setAdvanced(!advanced)}><span><Icon name="layers" />Advanced</span><Icon name="chevron" /></button>{advanced && <nav className="advanced-nav"><button className={`nav-row ${selection.type === 'context' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'context' })}><Icon name="layers" />Context</button><button className={`nav-row ${selection.type === 'recovery' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'recovery' })}><Icon name="history" />Recovery</button><button className={`nav-row ${selection.type === 'activity' ? 'selected' : ''}`} onClick={() => setSelection({ type: 'activity' })}><Icon name="activity" />Activity</button></nav>}</div></aside>
-    <main className="workspace" data-tour="workspace">{content()}</main>
+    <main className="workspace" data-tour="workspace"><TaskComposer project={project} adapter={adapter} targetBranch={selectedBranch} composerRef={composerRef} onRun={runTask} onConnect={() => setModal('repository')} />{content()}</main>
     <div className="inspector-shell" data-tour="inspector"><Inspector project={project} branch={selectedBranch} contexts={contexts} reasoningItem={inspectedReasoning} /></div>
     {modal === 'project' && <NewProjectModal repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onCreate={createProject} onValidateRepository={validateRepositoryLocation} />}
     {modal === 'repository' && <RepositoryModal project={project} repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onConnect={async (location) => { const result = await api.connectRepository(project.id, location); setModal(null); applyProject(result.project, 'Repository connected and scanned'); }} />}
     {modal === 'branch' && <BranchModal project={project} parentId={selectedBranch?.id || project.branches[0].id} initial={branchDraft} onClose={() => { setModal(null); setBranchDraft(null); }} onCreate={createBranch} />}
-    {modal === 'agent' && selectedBranch && <AgentRunModal branch={selectedBranch} adapter={adapter} onClose={() => setModal(null)} onStart={async (task) => { const result = await api.startAgentRun(project.id, selectedBranch.id, task); setModal(null); applyProject(result.project, `${adapter?.name || 'Agent'} started in isolation`); }} />}
     {modal === 'integrate' && project.agentRuns.find((run) => run.id === integrationRunId) && <IntegrationModal project={project} run={project.agentRuns.find((run) => run.id === integrationRunId)} onClose={() => { setModal(null); setIntegrationRunId(null); }} onIntegrate={async (input) => { const result = await api.integrateAgentRun(project.id, integrationRunId, input); setModal(null); setIntegrationRunId(null); applyProject(result.project, `${input.filePaths.length} file${input.filePaths.length === 1 ? '' : 's'} integrated into ${result.integration.branchName}`); }} />}
     {modal === 'context' && <ContextModal project={project} selectedBranchId={selectedBranch?.id} onClose={() => setModal(null)} onCreate={async (form) => { const result = await api.createContext(project.id, form); setModal(null); applyProject(result.project, `${form.label} added`); }} />}
     {modal === 'merge' && selectedBranch && <MergeModal project={project} source={selectedBranch} onClose={() => setModal(null)} onMerge={async (input) => { const result = await api.merge(project.id, input); setModal(null); applyProject(result.project, `${input.acceptedIds.length} changes merged with a recovery checkpoint`); }} />}
     {toast && <div className="toast" role="status"><Icon name="check" />{toast}</div>}
-    {tourOpen && <OnboardingTour stepIndex={tourStep} layoutKey={`${selection.type}:${selection.id || ''}:${advanced}`} onStepChange={setTourStep} onSkip={closeTour} onFinish={closeTour} />}
+    {tourOpen && <OnboardingTour stepIndex={tourStep} layoutKey={`${selection.type}:${selection.id || ''}:${advanced}`} onStepChange={setTourStep} onSkip={closeTour} onFinish={() => { closeTour(); setSelection({ type: 'focus', id: null }); window.requestAnimationFrame(() => composerRef.current?.focus()); }} />}
   </div>;
 }

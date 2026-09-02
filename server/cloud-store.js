@@ -44,7 +44,7 @@ function inherited(project, branchId, includePrivate = false) {
 
 function normalizeRun(run) {
   return {
-    events: [], files: [], diffStat: '', diff: '', summary: '', eventCursor: 0,
+    events: [], files: [], diffStat: '', diff: '', summary: '', eventCursor: 0, verification: null,
     sandboxName: null, commandId: null, sessionId: null, pid: null, exitCode: null,
     startedAt: null, endedAt: null,
     ...run
@@ -141,6 +141,7 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
       repoPath,
       intent: { ...defaultIntent(brief), ...(intent || {}) },
       repository,
+      verifyCommand: '',
       branches: [{
         id: mainId, projectId: id, parentId: null, name: 'Main', purpose: 'Deliver the approved project intent.',
         status: 'active', output: { summary: 'Mainline work starts here.', changes: [] }, createdAt: timestamp, updatedAt: timestamp
@@ -169,6 +170,7 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
 
   async function updateRepositorySnapshot(projectId, repository) {
     return mutate(projectId, (project) => {
+      if (repository.root && project.repoPath && project.repoPath !== repository.root) project.integration = {};
       project.repoPath = repository.root || project.repoPath;
       project.repository = repository;
       addEvent(project, 'repository', `Scanned ${repository.fileCount || 0} tracked files on ${repository.branch || 'the default branch'}.`);
@@ -367,7 +369,7 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
       Object.assign(run, updates, { updatedAt: timestamp });
       if (run.status === 'running' && !run.startedAt) run.startedAt = timestamp;
       if (TERMINAL_RUN_STATUSES.has(run.status) && !run.endedAt) run.endedAt = timestamp;
-      if (TERMINAL_RUN_STATUSES.has(run.status)) {
+      if (TERMINAL_RUN_STATUSES.has(updates.status)) {
         const branch = project.branches.find((item) => item.id === run.branchId);
         if (branch) { branch.status = 'review'; branch.updatedAt = timestamp; }
       }
@@ -428,6 +430,13 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
     return result.rows[0]?.patch || null;
   }
 
+  async function updateProjectSettings(projectId, { verifyCommand } = {}) {
+    return mutate(projectId, (project) => {
+      project.verifyCommand = String(verifyCommand || '').trim().slice(0, 400);
+      addEvent(project, 'settings', project.verifyCommand ? 'Verify command updated.' : 'Verify command cleared.');
+    });
+  }
+
   async function updateProjectIntegration(projectId, integration) {
     return mutate(projectId, (project) => {
       project.integration = integration || {};
@@ -471,7 +480,7 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
     replaceReasoningProposals, resolveReasoningItem, addReasoningChallenge,
     createCheckpoint, restoreCheckpoint, mergeBranch,
     createAgentRun, getAgentRun, updateAgentRun, addAgentRunEvent, appendAgentRunEvents, listAgentRunEvents,
-    saveAgentRunPatch, getAgentRunPatch, updateProjectIntegration,
+    saveAgentRunPatch, getAgentRunPatch, updateProjectIntegration, updateProjectSettings,
     createAttentionItem, resolveAttentionItem,
     recoverInterruptedRuns: async () => 0,
     seedDemo: async () => {}

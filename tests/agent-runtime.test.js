@@ -190,3 +190,37 @@ test('reports parallel conflicts and restores the dedicated integration workspac
   runtime.shutdown();
   store.close();
 });
+
+test('verifies a completed run in its worktree from the parent process', async (t) => {
+  const { root, repo } = repository(t);
+  const store = createStore(':memory:');
+  const runtime = createAgentRuntime(store, { adapter: 'demo', stateRoot: join(root, 'state') });
+  t.after(() => { runtime.shutdown(); store.close(); });
+  const project = store.createProject({ name: 'Verify locally', repoPath: repo, brief: 'Run checks against agent output' });
+  const run = completedRun(store, project, project.branches[0].id, join(root, 'verify-worktree'), (worktree) => {
+    writeFileSync(join(worktree, 'change.txt'), 'verify me\n');
+  });
+
+  const started = runtime.verify(project.id, run.id, { command: 'cat change.txt && echo checks passed' });
+  assert.equal(started.verification.status, 'running');
+  assert.equal(started.verification.mode, 'worktree');
+  const passed = await waitFor(() => {
+    const current = store.getAgentRun(project.id, run.id);
+    return current.verification?.status === 'passed' ? current : null;
+  });
+  assert.equal(passed.verification.exitCode, 0);
+  assert.ok(passed.events.some((event) => event.kind === 'verify' && /checks passed/.test(event.message)));
+
+  const failing = runtime.verify(project.id, run.id, { command: 'echo broken output && exit 3' });
+  assert.equal(failing.verification.status, 'running');
+  const failed = await waitFor(() => {
+    const current = store.getAgentRun(project.id, run.id);
+    return current.verification?.status === 'failed' ? current : null;
+  });
+  assert.equal(failed.verification.exitCode, 3);
+  assert.ok(failed.events.some((event) => event.kind === 'verify' && /broken output/.test(event.message)));
+  const attention = store.getProject(project.id).attentionItems.find((item) => item.kind === 'failure' && item.runId === run.id);
+  assert.match(attention.title, /verification failed/);
+
+  assert.throws(() => runtime.verify(project.id, run.id, { command: '' }), /verify command/);
+});

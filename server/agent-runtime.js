@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from
 import { basename, dirname, join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { spawn, spawnSync } from 'node:child_process';
-import { inspectRepository } from './repository.js';
+import { detectVerifyCommand, inspectRepository } from './repository.js';
 
 const terminalStatuses = new Set(['completed', 'failed', 'cancelled']);
 const activeStatuses = new Set(['queued', 'running', 'paused']);
@@ -479,6 +479,53 @@ export function createAgentRuntime(store, options = {}) {
     return { project: store.getProject(projectId), run: store.getAgentRun(projectId, runId), integration };
   }
 
+  function verify(projectId, runId, input = {}) {
+    const project = store.getProject(projectId);
+    const run = store.getAgentRun(projectId, runId);
+    if (!project || !run) throw integrationError('Agent run not found', 404);
+    if (run.status !== 'completed') throw integrationError('Only a completed agent run can be verified');
+    if (run.verification?.status === 'running' && active.has(`verify:${runId}`)) throw integrationError('A verification is already running for this run');
+    if (!run.worktreePath || !existsSync(run.worktreePath)) throw integrationError('The isolated agent worktree is no longer available');
+    const command = String(input.command || project.verifyCommand || detectVerifyCommand(project.repository)).trim().slice(0, 400);
+    if (!command) throw integrationError('Add a test script to package.json or set a verify command for this project');
+    const startedMs = Date.now();
+    // Verification runs from Threadline's parent process on purpose: browser
+    // tests and local listeners are blocked inside the agent sandbox. It still
+    // executes agent-written code, so server credentials stay scrubbed.
+    const script = `if [ -f package-lock.json ] && [ ! -d node_modules ]; then npm ci --no-audit --no-fund; fi\n${command}`;
+    const child = spawnProcess('/bin/sh', ['-c', script], {
+      cwd: run.worktreePath, env: buildAgentEnvironment(), stdio: ['ignore', 'pipe', 'pipe'], detached: process.platform !== 'win32'
+    });
+    const entry = { kind: 'process', child, grouped: process.platform !== 'win32', settled: false, cancelTimer: null };
+    active.set(`verify:${runId}`, entry);
+    store.updateAgentRun(projectId, runId, { verification: { command, status: 'running', mode: 'worktree', startedAt: new Date(startedMs).toISOString() } });
+    store.addAgentRunEvent(projectId, runId, 'verify', `Verification started in the isolated worktree: ${command}`);
+    const emit = (line) => line.trim() && store.addAgentRunEvent(projectId, runId, 'verify', line);
+    createInterface({ input: child.stdout }).on('line', emit);
+    createInterface({ input: child.stderr }).on('line', emit);
+    const finish = (status, exitCode) => {
+      if (entry.settled) return;
+      entry.settled = true;
+      active.delete(`verify:${runId}`);
+      const verification = { command, status, mode: 'worktree', exitCode, durationMs: Date.now() - startedMs, startedAt: new Date(startedMs).toISOString(), endedAt: new Date().toISOString() };
+      store.updateAgentRun(projectId, runId, { verification });
+      store.addAgentRunEvent(projectId, runId, 'verify', status === 'error'
+        ? `Verification could not run: ${command}`
+        : `Verification ${status} in ${Math.round(verification.durationMs / 1000)}s: ${command}`);
+      if (status === 'failed') {
+        const branch = store.getProject(projectId)?.branches.find((item) => item.id === run.branchId);
+        if (branch) store.createAttentionItem(projectId, {
+          branchId: branch.id, runId, kind: 'failure', severity: 'high',
+          title: `${branch.name} verification failed`,
+          detail: `${command} exited with code ${exitCode}. Review the verify output on the run.`
+        });
+      }
+    };
+    child.once('error', (error) => { store.addAgentRunEvent(projectId, runId, 'warning', error.message); finish('error', null); });
+    child.once('close', (code) => finish(code === 0 ? 'passed' : 'failed', code ?? 1));
+    return store.getAgentRun(projectId, runId);
+  }
+
   function shutdown() {
     for (const entry of active.values()) {
       if (entry.kind === 'process') {
@@ -491,5 +538,5 @@ export function createAgentRuntime(store, options = {}) {
     active.clear();
   }
 
-  return { adapterInfo, start, control, integrate, shutdown };
+  return { adapterInfo, start, control, integrate, verify, shutdown };
 }

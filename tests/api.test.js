@@ -14,6 +14,11 @@ async function setup(t, { withAgentRuntime = false } = {}) {
       const integration = { branchName: 'threadline/api-project-test', commit: 'abc123', files: input.filePaths, integratedAt: new Date().toISOString() };
       const run = store.updateAgentRun(projectId, runId, { integration });
       return { project: store.getProject(projectId), run, integration };
+    },
+    verify: (projectId, runId, input = {}) => {
+      const run = store.getAgentRun(projectId, runId);
+      if (!run) throw Object.assign(new Error('Agent run not found'), { status: 404 });
+      return store.updateAgentRun(projectId, runId, { verification: { command: input.command || 'npm test', status: 'running', mode: 'worktree' } });
     }
   } : undefined;
   const handler = createApiHandler(store, { agentRuntime });
@@ -194,6 +199,62 @@ test('integrates reviewed local run files and rejects unsupported runtimes', asy
   const result = await unsupported.request(`/api/projects/${unsupportedProject.id}/runs/missing/integrate`, {
     method: 'POST', body: '{}'
   });
+  assert.equal(result.response.status, 501);
+  assert.match(result.payload.error, /not supported by the configured agent runtime/);
+});
+
+test('starts a run from one task, auto-creating a branch named from it', async (t) => {
+  const { store, request } = await setup(t, { withAgentRuntime: true });
+  const project = store.createProject({ name: 'Composer', repoPath: process.cwd(), brief: 'One-box prompting' });
+
+  const first = await request(`/api/projects/${project.id}/runs`, {
+    method: 'POST', body: JSON.stringify({ task: 'Add retry logic to the fetch layer, please.' })
+  });
+  assert.equal(first.response.status, 202);
+  const branch = first.payload.project.branches.find((item) => item.id === first.payload.run.branchId);
+  assert.equal(branch.name, 'Add retry logic to the fetch');
+  assert.equal(branch.purpose, 'Add retry logic to the fetch layer, please.');
+  assert.equal(branch.parentId, project.branches[0].id);
+
+  const second = await request(`/api/projects/${project.id}/runs`, {
+    method: 'POST', body: JSON.stringify({ task: 'Add retry logic to the fetch layer, please.' })
+  });
+  const secondBranch = second.payload.project.branches.find((item) => item.id === second.payload.run.branchId);
+  assert.equal(secondBranch.name, 'Add retry logic to the fetch 2');
+
+  store.updateAgentRun(project.id, first.payload.run.id, { status: 'completed' });
+  const targeted = await request(`/api/projects/${project.id}/runs`, {
+    method: 'POST', body: JSON.stringify({ task: 'Continue on the same branch', branchId: branch.id })
+  });
+  assert.equal(targeted.response.status, 202);
+  assert.equal(targeted.payload.run.branchId, branch.id);
+
+  const bare = store.createProject({ name: 'No repo yet', brief: 'Blocked prompting' });
+  const blocked = await request(`/api/projects/${bare.id}/runs`, { method: 'POST', body: JSON.stringify({ task: 'Do something' }) });
+  assert.equal(blocked.response.status, 422);
+  assert.match(blocked.payload.error, /Connect a repository/);
+  assert.equal(store.getProject(bare.id).branches.length, 1);
+});
+
+test('verifies a completed run and stores the project verify command', async (t) => {
+  const { store, request } = await setup(t, { withAgentRuntime: true });
+  const project = store.createProject({ name: 'Verify API', repoPath: process.cwd(), brief: 'One-click testing' });
+  const run = store.createAgentRun(project.id, project.branches[0].id, { adapter: 'test', task: 'Change one file', worktreePath: '/tmp/test-agent-run' });
+  store.updateAgentRun(project.id, run.id, { status: 'completed' });
+
+  const verified = await request(`/api/projects/${project.id}/runs/${run.id}/verify`, { method: 'POST', body: '{}' });
+  assert.equal(verified.response.status, 202);
+  assert.equal(verified.payload.run.verification.status, 'running');
+
+  const settings = await request(`/api/projects/${project.id}/settings`, {
+    method: 'PATCH', body: JSON.stringify({ verifyCommand: 'npm run test:browser' })
+  });
+  assert.equal(settings.response.status, 200);
+  assert.equal(settings.payload.project.verifyCommand, 'npm run test:browser');
+
+  const unsupported = await setup(t);
+  const bareProject = unsupported.store.createProject({ name: 'Review only', brief: 'No runtime' });
+  const result = await unsupported.request(`/api/projects/${bareProject.id}/runs/missing/verify`, { method: 'POST', body: '{}' });
   assert.equal(result.response.status, 501);
   assert.match(result.payload.error, /not supported by the configured agent runtime/);
 });
