@@ -89,6 +89,17 @@ export function inspectRepository(repoPath) {
   };
 }
 
+export function detectVerifyCommand(snapshot) {
+  const excerpt = (snapshot?.excerpts || []).find((item) => item.path === 'package.json' || item.path.endsWith('/package.json'));
+  if (!excerpt) return '';
+  try {
+    const scripts = JSON.parse(excerpt.content).scripts || {};
+    return scripts.test && !/no test specified/i.test(scripts.test) ? 'npm test' : '';
+  } catch {
+    return /"test"\s*:\s*"(?!.{0,80}no test specified)/.test(excerpt.content) ? 'npm test' : '';
+  }
+}
+
 export function repositoryContext(snapshot) {
   if (!snapshot?.scannedAt) return null;
   return {

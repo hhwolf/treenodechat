@@ -15,6 +15,18 @@ const readBody = async (request) => {
   return value ? JSON.parse(value) : {};
 };
 
+function apiError(message, status = 422) {
+  return Object.assign(new Error(message), { status });
+}
+
+export function taskBranchName(task, existingNames = []) {
+  const base = String(task || '').replace(/\s+/g, ' ').trim().split(' ').slice(0, 6).join(' ').replace(/[.,;:!?]+$/, '').slice(0, 60) || 'Agent task';
+  const taken = new Set(existingNames.map((name) => String(name).toLowerCase()));
+  let candidate = base;
+  for (let suffix = 2; taken.has(candidate.toLowerCase()); suffix += 1) candidate = `${base} ${suffix}`;
+  return candidate;
+}
+
 export function createApiHandler(store, { agentRuntime, repositoryInspector = inspectRepository } = {}) {
   return async function apiHandler(request, response) {
     const url = new URL(request.url, 'http://threadline.local');
@@ -195,6 +207,37 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         return true;
       }
 
+      const projectRunsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/runs$/);
+      if (projectRunsMatch && request.method === 'POST') {
+        if (!agentRuntime) {
+          json(response, 503, { error: 'No coding-agent adapter is configured' });
+          return true;
+        }
+        const body = await readBody(request);
+        let project = await store.getProject(projectRunsMatch[1]);
+        if (!project) {
+          json(response, 404, { error: 'Project not found' });
+          return true;
+        }
+        const task = String(body.task || '').trim();
+        if (!task) throw apiError('Describe what the agent should accomplish');
+        const info = await agentRuntime.adapterInfo();
+        if (!info.available) throw apiError(info.error || `${info.name || 'The coding agent'} is unavailable`);
+        if (!project.repoPath) throw apiError('Connect a repository before starting an agent');
+        let branchId = body.branchId;
+        if (branchId) {
+          if (!project.branches.some((branch) => branch.id === branchId)) throw apiError('Branch not found', 404);
+        } else {
+          const parent = project.branches.find((branch) => !branch.parentId) || project.branches[0];
+          const name = taskBranchName(task, project.branches.map((branch) => branch.name));
+          project = await store.createBranch(project.id, { parentId: parent.id, name, purpose: task.slice(0, 2_000) });
+          branchId = project.branches.find((branch) => branch.name === name).id;
+        }
+        const run = await agentRuntime.start(project.id, branchId, task);
+        json(response, 202, { run, project: await store.getProject(project.id) });
+        return true;
+      }
+
       const branchRunsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/branches\/([^/]+)\/runs$/);
       if (branchRunsMatch && request.method === 'POST') {
         if (!agentRuntime) {
@@ -232,6 +275,26 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
         }
         const result = await agentRuntime.integrate(runIntegrateMatch[1], runIntegrateMatch[2], await readBody(request));
         json(response, 200, result);
+        return true;
+      }
+
+      const runVerifyMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/runs\/([^/]+)\/verify$/);
+      if (runVerifyMatch && request.method === 'POST') {
+        if (!agentRuntime?.verify) {
+          json(response, 501, { error: 'Run verification is not supported by the configured agent runtime' });
+          return true;
+        }
+        const body = await readBody(request);
+        const run = await agentRuntime.verify(runVerifyMatch[1], runVerifyMatch[2], body);
+        json(response, 202, { run, project: await store.getProject(runVerifyMatch[1]) });
+        return true;
+      }
+
+      const settingsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/settings$/);
+      if (settingsMatch && request.method === 'PATCH') {
+        const body = await readBody(request);
+        const project = await store.updateProjectSettings(settingsMatch[1], { verifyCommand: body.verifyCommand });
+        json(response, project ? 200 : 404, project ? { project } : { error: 'Project not found' });
         return true;
       }
 

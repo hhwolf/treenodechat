@@ -85,3 +85,17 @@ test('exposes supervised agent execution without crowding the base workflow', ()
   assert.match(styles, /agent-panel/);
   assert.match(styles, /attention-list/);
 });
+
+test('makes prompting and verification one action each', () => {
+  assert.match(app, /data-tour="composer"/);
+  assert.match(app, /Describe one concrete task for the agent/);
+  assert.match(app, /Runs in a new branch named from your task/);
+  assert.match(app, /Connect repository/);
+  for (const phrase of ['Verify again', 'Verifying…', 'Tests passed', 'Verification failed']) {
+    assert.match(app, new RegExp(phrase));
+  }
+  assert.match(styles, /task-composer/);
+  assert.match(styles, /verify-badge/);
+  assert.match(styles, /previous-runs/);
+  assert.match(styles, /\.tour-overlay \{[^}]*pointer-events: none/);
+});

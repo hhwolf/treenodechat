@@ -2,6 +2,7 @@ import { Buffer } from 'node:buffer';
 import { randomUUID } from 'node:crypto';
 import { Sandbox } from '@vercel/sandbox';
 import { parseGitHubRepository } from './github-repository.js';
+import { detectVerifyCommand } from './repository.js';
 
 const ACTIVE = new Set(['queued', 'running', 'paused']);
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
@@ -11,6 +12,7 @@ const MAX_PATCH_CHARS = 5_000_000;
 const MAX_UNTRACKED_PATCH_FILES = 200;
 const DEFAULT_TIMEOUT = 40 * 60 * 1_000;
 const INTEGRATION_TIMEOUT = 10 * 60 * 1_000;
+const VERIFY_TIMEOUT = 15 * 60 * 1_000;
 const refreshes = new Map();
 
 function integrationError(message, status = 422, details) {
@@ -22,6 +24,12 @@ function integrationError(message, status = 422, details) {
 
 function slug(value) {
   return String(value || 'project').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'project';
+}
+
+// git apply --include patterns are fnmatch globs; escape metacharacters so
+// literal file names like api/[slug].js match instead of being skipped.
+function globEscape(value) {
+  return String(value).replace(/[[\]*?\\]/g, '\\$&');
 }
 
 function safeRelativePath(value) {
@@ -91,10 +99,10 @@ async function resolveRepoDir(sandbox, repoName) {
 }
 
 async function summarizeSandbox(sandbox, baseCommit, cwd = sandbox.cwd) {
-  const status = await commandText(sandbox, 'git', ['status', '--short', '--untracked-files=all'], cwd);
-  const statusLines = status.stdout.split('\n').filter(Boolean);
-  const files = [...new Set(statusLines.map((line) => line.slice(3).replace(/^.* -> /, '')).filter(Boolean))].slice(0, 100);
-  const untracked = statusLines.filter((line) => line.startsWith('?? ')).map((line) => line.slice(3)).slice(0, 30);
+  const status = await commandText(sandbox, 'git', ['status', '--porcelain', '-z', '--no-renames', '--untracked-files=all'], cwd);
+  const entries = status.stdout.split('\0').filter(Boolean);
+  const files = [...new Set(entries.map((entry) => entry.slice(3)).filter(Boolean))].slice(0, 100);
+  const untracked = entries.filter((entry) => entry.startsWith('?? ')).map((entry) => entry.slice(3)).slice(0, 30);
   const stat = await commandText(sandbox, 'git', ['diff', '--stat', baseCommit], cwd);
   const trackedDiff = await commandText(sandbox, 'git', ['diff', '--no-color', '--unified=3', baseCommit], cwd);
   const untrackedDiffs = [];
@@ -114,9 +122,9 @@ async function summarizeSandbox(sandbox, baseCommit, cwd = sandbox.cwd) {
 async function collectSandboxPatch(sandbox, baseCommit, cwd) {
   const tracked = await commandText(sandbox, 'git', ['diff', '--binary', '--full-index', '--no-renames', baseCommit], cwd);
   if (tracked.exitCode !== 0) throw new Error(tracked.stderr.trim() || 'Could not capture the run patch');
-  const untracked = await commandText(sandbox, 'git', ['ls-files', '--others', '--exclude-standard'], cwd);
+  const untracked = await commandText(sandbox, 'git', ['ls-files', '--others', '--exclude-standard', '-z'], cwd);
   const chunks = tracked.stdout.trim() ? [tracked.stdout] : [];
-  for (const file of untracked.stdout.split('\n').filter(Boolean).slice(0, MAX_UNTRACKED_PATCH_FILES)) {
+  for (const file of untracked.stdout.split('\0').filter(Boolean).slice(0, MAX_UNTRACKED_PATCH_FILES)) {
     const created = await commandText(sandbox, 'git', ['diff', '--no-index', '--binary', '--full-index', '--', '/dev/null', file], cwd);
     if (created.exitCode !== 0 && created.exitCode !== 1) throw new Error(created.stderr.trim() || `Could not capture ${file}`);
     if (created.stdout.trim()) chunks.push(created.stdout);
@@ -324,7 +332,10 @@ exit "$code"
   async function refreshProject(projectId) {
     const project = await store.getProject(projectId);
     if (!project) return null;
-    await Promise.all(project.agentRuns.filter((run) => ACTIVE.has(run.status)).map((run) => refresh(projectId, run.id)));
+    await Promise.all(project.agentRuns.flatMap((run) => [
+      ...(ACTIVE.has(run.status) ? [refresh(projectId, run.id)] : []),
+      ...(run.verification?.status === 'running' ? [refreshVerification(projectId, run.id)] : [])
+    ]));
     return store.getProject(projectId);
   }
 
@@ -401,7 +412,7 @@ exit "$code"
       if (checkout.exitCode !== 0) throw integrationError(scrub(checkout.stderr.trim()) || 'Could not prepare the integration branch');
       await sandbox.mkDir('/vercel/threadline');
       await sandbox.writeFiles([{ path: '/vercel/threadline/patch.diff', content: Buffer.from(patch) }]);
-      const applied = await git(['apply', '--3way', '--index', '--binary', ...selectedFiles.map((file) => `--include=${file}`), '/vercel/threadline/patch.diff']);
+      const applied = await git(['apply', '--3way', '--index', '--binary', ...selectedFiles.map((file) => `--include=${globEscape(file)}`), '/vercel/threadline/patch.diff']);
       if (applied.exitCode !== 0) {
         const conflicted = await git(['diff', '--name-only', '--diff-filter=U']);
         const conflicts = conflicted.stdout.split('\n').filter(Boolean);
@@ -428,5 +439,152 @@ exit "$code"
     }
   }
 
-  return { adapterInfo, start, refresh, refreshProject, control, integrate, shutdown: () => {} };
+  async function startVerificationSandbox(project, run) {
+    if (run.sandboxName) {
+      try {
+        const sandbox = await SandboxClass.get({ name: run.sandboxName, resume: true });
+        const probe = await commandText(sandbox, 'git', ['-C', run.worktreePath, 'rev-parse', 'HEAD'], sandbox.cwd);
+        if (probe.exitCode === 0) return { sandbox, repoDir: run.worktreePath, mode: 'resumed' };
+        await sandbox.stop?.().catch(() => {});
+      } catch { /* The run sandbox has expired; recreate it below. */ }
+    }
+    if (!run.baseCommit) throw integrationError('This run has no recorded base commit');
+    const parsed = parseGitHubRepository(project.repoPath);
+    const sandbox = await SandboxClass.create({
+      name: `tl-ver-${randomUUID().slice(0, 8)}`,
+      source: { type: 'git', url: `${parsed.root}.git`, depth: 50, ...(githubToken ? { username: 'x-access-token', password: githubToken } : {}) },
+      timeout: Number(process.env.THREADLINE_VERIFY_TIMEOUT || VERIFY_TIMEOUT),
+      tags: { product: 'threadline', run: run.id.slice(0, 8) }
+    });
+    try {
+      const repoDir = await resolveRepoDir(sandbox, parsed.repo);
+      const hasBase = await commandText(sandbox, 'git', ['cat-file', '-e', `${run.baseCommit}^{commit}`], repoDir);
+      if (hasBase.exitCode !== 0) {
+        const fetched = await commandText(sandbox, 'git', ['fetch', 'origin', run.baseCommit], repoDir);
+        if (fetched.exitCode !== 0) throw integrationError(`Could not fetch the run base commit ${run.baseCommit.slice(0, 8)} from GitHub`);
+      }
+      const checkout = await commandText(sandbox, 'git', ['checkout', '--detach', run.baseCommit], repoDir);
+      if (checkout.exitCode !== 0) throw integrationError(checkout.stderr.trim() || 'Could not check out the run base commit');
+      if (run.files?.length) {
+        const patch = store.getAgentRunPatch ? await store.getAgentRunPatch(project.id, run.id) : null;
+        if (!patch) throw integrationError('No stored patch is available for this run; start a new run to verify its changes');
+        await sandbox.mkDir('/vercel/threadline');
+        await sandbox.writeFiles([{ path: '/vercel/threadline/patch.diff', content: Buffer.from(patch) }]);
+        const applied = await commandText(sandbox, 'git', ['apply', '--3way', '--index', '--binary', '/vercel/threadline/patch.diff'], repoDir);
+        if (applied.exitCode !== 0) throw integrationError('Could not reapply the run changes for verification');
+      }
+      return { sandbox, repoDir, mode: 'recreated' };
+    } catch (error) {
+      await sandbox.stop?.().catch(() => {});
+      throw error;
+    }
+  }
+
+  async function verify(projectId, runId, input = {}) {
+    const project = await store.getProject(projectId);
+    const run = await store.getAgentRun(projectId, runId);
+    if (!project || !run) throw integrationError('Agent run not found', 404);
+    if (run.status !== 'completed') throw integrationError('Only a completed agent run can be verified');
+    if (run.verification?.status === 'running') throw integrationError('A verification is already running for this run');
+    const command = String(input.command || project.verifyCommand || detectVerifyCommand(project.repository)).trim().slice(0, 400);
+    if (!command) throw integrationError('Add a test script to package.json or set a verify command for this project');
+    const { sandbox, repoDir, mode } = await startVerificationSandbox(project, run);
+    try {
+      const allow = ['registry.npmjs.org', ...(process.env.THREADLINE_VERIFY_ALLOW || '').split(',').map((host) => host.trim()).filter(Boolean)];
+      await sandbox.updateNetworkPolicy({ allow });
+      const runner = `#!/usr/bin/env bash
+set +e
+cd "$THREADLINE_REPO"
+start=$(date +%s)
+if [ -f package-lock.json ] && [ ! -d node_modules ]; then
+  echo '[threadline] installing dependencies with npm ci' >> /vercel/threadline/verify.log
+  npm ci --no-audit --no-fund >> /vercel/threadline/verify.log 2>&1
+fi
+echo "[threadline] $THREADLINE_VERIFY_CMD" >> /vercel/threadline/verify.log
+bash -c "$THREADLINE_VERIFY_CMD" >> /vercel/threadline/verify.log 2>&1
+code=$?
+end=$(date +%s)
+if [ "$code" -eq 0 ]; then state=passed; else state=failed; fi
+printf '{"status":"%s","exitCode":%s,"durationMs":%s}' "$state" "$code" "$(((end-start)*1000))" > /vercel/threadline/verify-status.json
+exit "$code"
+`;
+      await sandbox.mkDir('/vercel/threadline');
+      await sandbox.writeFiles([
+        { path: '/vercel/threadline/verify.sh', content: Buffer.from(runner) },
+        { path: '/vercel/threadline/verify.log', content: Buffer.from('') },
+        { path: '/vercel/threadline/verify-status.json', content: Buffer.from('{"status":"running"}') }
+      ]);
+      const started = await sandbox.runCommand({
+        cmd: 'bash', args: ['/vercel/threadline/verify.sh'], cwd: repoDir, detached: true,
+        env: { THREADLINE_REPO: repoDir, THREADLINE_VERIFY_CMD: command, NO_COLOR: '1', CI: '1' }
+      });
+      await store.updateAgentRun(projectId, runId, {
+        verification: {
+          command, status: 'running', mode, startedAt: new Date().toISOString(),
+          sandboxName: sandbox.name, commandId: started.cmdId, logCursor: 0
+        }
+      });
+      await store.addAgentRunEvent(projectId, runId, 'verify', mode === 'resumed'
+        ? `Verification started in the run sandbox: ${command}`
+        : `Verification started in a fresh sandbox from ${run.baseCommit.slice(0, 8)} with the run changes applied: ${command}`);
+      return store.getAgentRun(projectId, runId);
+    } catch (error) {
+      await sandbox.stop?.().catch(() => {});
+      throw error;
+    }
+  }
+
+  async function doRefreshVerification(projectId, runId) {
+    let run = await store.getAgentRun(projectId, runId);
+    const verification = run?.verification;
+    if (!verification || verification.status !== 'running' || !verification.sandboxName) return run;
+    try {
+      const sandbox = await SandboxClass.get({ name: verification.sandboxName, resume: true });
+      const log = await readText(sandbox, '/vercel/threadline/verify.log');
+      const cursor = Number(verification.logCursor) || 0;
+      const fresh = log.slice(cursor).trim();
+      if (fresh) {
+        await store.addAgentRunEvent(projectId, runId, 'verify', fresh.slice(-4_000));
+        run = await store.updateAgentRun(projectId, runId, { verification: { ...verification, logCursor: log.length, pollFailures: 0 } });
+      }
+      let state = {};
+      try { state = JSON.parse(await readText(sandbox, '/vercel/threadline/verify-status.json', 2_000) || '{}'); } catch { /* A partial write is retried on the next poll. */ }
+      if (state.status !== 'passed' && state.status !== 'failed') return run;
+      const final = {
+        ...run.verification,
+        status: state.status,
+        exitCode: state.exitCode ?? (state.status === 'passed' ? 0 : 1),
+        durationMs: Number(state.durationMs) || 0,
+        endedAt: new Date().toISOString()
+      };
+      run = await store.updateAgentRun(projectId, runId, { verification: final });
+      await store.addAgentRunEvent(projectId, runId, 'verify', `Verification ${state.status}${final.durationMs ? ` in ${Math.round(final.durationMs / 1000)}s` : ''}: ${final.command}`);
+      if (state.status === 'failed') {
+        const project = await store.getProject(projectId);
+        const branch = project?.branches.find((item) => item.id === run.branchId);
+        if (branch) await store.createAttentionItem(projectId, {
+          branchId: branch.id, runId, kind: 'failure', severity: 'high',
+          title: `${branch.name} verification failed`,
+          detail: `${final.command} exited with code ${final.exitCode}. Review the verify output on the run.`
+        });
+      }
+      await sandbox.stop().catch(() => {});
+      return run;
+    } catch (error) {
+      const current = (await store.getAgentRun(projectId, runId))?.verification;
+      if (!current || current.status !== 'running') return store.getAgentRun(projectId, runId);
+      const pollFailures = (current.pollFailures || 0) + 1;
+      if (pollFailures < 3) return store.updateAgentRun(projectId, runId, { verification: { ...current, pollFailures } });
+      await store.addAgentRunEvent(projectId, runId, 'warning', `Verification stopped: ${error.message}`);
+      return store.updateAgentRun(projectId, runId, { verification: { ...current, status: 'error', endedAt: new Date().toISOString() } });
+    }
+  }
+
+  async function refreshVerification(projectId, runId) {
+    const key = `verify:${projectId}:${runId}`;
+    if (!refreshes.has(key)) refreshes.set(key, doRefreshVerification(projectId, runId).finally(() => refreshes.delete(key)));
+    return refreshes.get(key);
+  }
+
+  return { adapterInfo, start, refresh, refreshProject, control, integrate, verify, shutdown: () => {} };
 }

@@ -10,6 +10,7 @@ function finished(stdout = '', stderr = '', exitCode = 0) {
 
 class FakeSandbox {
   static created = [];
+  static expired = new Set();
 
   static async create(options) {
     const sandbox = new FakeSandbox(options);
@@ -18,6 +19,7 @@ class FakeSandbox {
   }
 
   static async get({ name }) {
+    if (FakeSandbox.expired.has(name)) throw new Error('Sandbox not found');
     return FakeSandbox.created.find((sandbox) => sandbox.name === name);
   }
 
@@ -49,8 +51,8 @@ class FakeSandbox {
         if (command.cmd === 'git' && args.includes('--cached')) return finished('', '', 1);
         if (command.cmd === 'git' && args.includes('commit')) { this.committed = true; return finished(); }
         if (command.cmd === 'git' && args[0] === 'rev-parse') return finished(this.committed ? 'def456\n' : 'abc123\n');
-        if (command.cmd === 'git' && args[0] === 'status' && this.completed) return finished(' M src/app.js\n?? tests/new.test.js\n');
-        if (command.cmd === 'git' && args[0] === 'ls-files') return finished(this.completed ? 'tests/new.test.js\n' : '');
+        if (command.cmd === 'git' && args[0] === 'status' && this.completed) return finished(' M src/app.js\0?? tests/new.test.js\0');
+        if (command.cmd === 'git' && args[0] === 'ls-files') return finished(this.completed ? 'tests/new.test.js\0' : '');
         if (command.cmd === 'git' && args.includes('--stat')) return finished('src/app.js | 2 +-\n');
         if (command.cmd === 'git' && args.includes('--no-renames') && args.includes('--binary')) return finished('diff --git a/src/app.js b/src/app.js\n+binary-safe tracked patch\n');
         if (command.cmd === 'git' && args.includes('--no-index') && args.includes('--binary')) return finished('diff --git a/tests/new.test.js b/tests/new.test.js\nnew file mode 100644\n', '', 1);
@@ -75,6 +77,7 @@ class FakeSandbox {
 function setup(t) {
   FakeSandbox.created = [];
   FakeSandbox.applyExitCode = 0;
+  FakeSandbox.expired = new Set();
   const database = newDb();
   const { Pool } = database.adapters.createPg();
   const store = createCloudStore('', { pool: new Pool() });
@@ -166,9 +169,9 @@ test('pauses, resumes, and collects terminal Sandbox evidence for human review',
   assert.match(patch, /new file mode 100644/);
 });
 
-async function setupCompletedHostedRun(t, name) {
+async function setupCompletedHostedRun(t, name, projectExtras = {}) {
   const store = setup(t);
-  const project = await store.createProject({ name, repoPath: 'https://github.com/example/project', brief: 'Ship accepted code.' });
+  const project = await store.createProject({ name, repoPath: 'https://github.com/example/project', brief: 'Ship accepted code.', ...projectExtras });
   const runtime = createSandboxRuntime(store, {
     SandboxClass: FakeSandbox,
     openAIKey: 'openai-secret',
@@ -243,4 +246,67 @@ test('keeps hosted runs review-only when the stored patch or token is missing', 
   const reviewOnly = createSandboxRuntime(store, { SandboxClass: FakeSandbox, openAIKey: 'openai-secret', githubToken: '', allowWithoutVercelAuth: true });
   assert.equal((await reviewOnly.adapterInfo()).supportsIntegration, false);
   await assert.rejects(reviewOnly.integrate(project.id, runId, { filePaths: ['src/app.js'] }), /GITHUB_TOKEN/);
+});
+
+test('verifies a completed hosted run by resuming its sandbox', async (t) => {
+  const { store, runtime, project, runId } = await setupCompletedHostedRun(t, 'Hosted Verify', {
+    repository: { excerpts: [{ path: 'package.json', content: '{"scripts":{"test":"node --test"}}' }] }
+  });
+  const started = await runtime.verify(project.id, runId, {});
+  assert.equal(started.verification.status, 'running');
+  assert.equal(started.verification.mode, 'resumed');
+  assert.equal(started.verification.command, 'npm test');
+
+  const sandbox = FakeSandbox.created[0];
+  assert.deepEqual(sandbox.policies.at(-1), { allow: ['registry.npmjs.org'] });
+  assert.equal(sandbox.detachedCommand.env.THREADLINE_VERIFY_CMD, 'npm test');
+  assert.ok(sandbox.files.some((file) => file.path === '/vercel/threadline/verify.sh'));
+
+  sandbox.contents.set('/vercel/threadline/verify.log', 'test suite output\nall green\n');
+  sandbox.contents.set('/vercel/threadline/verify-status.json', '{"status":"passed","exitCode":0,"durationMs":34000}');
+  await runtime.refreshProject(project.id);
+  const run = await store.getAgentRun(project.id, runId);
+  assert.equal(run.verification.status, 'passed');
+  assert.equal(run.verification.exitCode, 0);
+  assert.ok(run.events.some((event) => event.kind === 'verify' && /all green/.test(event.message)));
+  assert.ok(run.events.some((event) => /Verification passed in 34s/.test(event.message)));
+  assert.equal(sandbox.stopped, true);
+});
+
+test('recreates an expired sandbox from the stored patch for verification', async (t) => {
+  const { store, runtime, project, runId } = await setupCompletedHostedRun(t, 'Hosted Verify Expired');
+  await store.updateProjectSettings(project.id, { verifyCommand: 'npm run test:browser' });
+  FakeSandbox.expired.add(FakeSandbox.created[0].name);
+
+  const started = await runtime.verify(project.id, runId, {});
+  assert.equal(started.verification.mode, 'recreated');
+  assert.equal(started.verification.command, 'npm run test:browser');
+  const sandbox = FakeSandbox.created[1];
+  assert.match(sandbox.name, /^tl-ver-/);
+  assert.ok(sandbox.commands.some((command) => command.cmd === 'git' && command.args.join(' ') === 'checkout --detach abc123'));
+  const apply = sandbox.commands.find((command) => command.cmd === 'git' && command.args[0] === 'apply');
+  assert.ok(apply.args.includes('--3way'));
+  assert.ok(!apply.args.some((arg) => arg.startsWith('--include')));
+  assert.ok(sandbox.files.some((file) => file.path === '/vercel/threadline/patch.diff' && /binary-safe tracked patch/.test(file.content.toString('utf8'))));
+
+  sandbox.contents.set('/vercel/threadline/verify-status.json', '{"status":"failed","exitCode":1,"durationMs":9000}');
+  await runtime.refreshProject(project.id);
+  const run = await store.getAgentRun(project.id, runId);
+  assert.equal(run.verification.status, 'failed');
+  const attention = (await store.getProject(project.id)).attentionItems.find((item) => item.kind === 'failure' && item.runId === runId);
+  assert.match(attention.title, /verification failed/);
+});
+
+test('refuses hosted verification without a detectable verify command', async (t) => {
+  const { runtime, project, runId } = await setupCompletedHostedRun(t, 'Hosted Verify Missing');
+  await assert.rejects(runtime.verify(project.id, runId, {}), /verify command/);
+});
+
+test('escapes glob metacharacters when integrating selected files', async (t) => {
+  const { store, runtime, project, runId } = await setupCompletedHostedRun(t, 'Hosted Glob');
+  await store.updateAgentRun(project.id, runId, { files: ['src/app.js', 'api/[slug].js'] });
+  const result = await runtime.integrate(project.id, runId, { filePaths: ['api/[slug].js'], commitMessage: 'Accept bracket file' });
+  assert.equal(result.integration.commit, 'def456');
+  const apply = FakeSandbox.created[1].commands.find((command) => command.cmd === 'git' && command.args[0] === 'apply');
+  assert.ok(apply.args.includes('--include=api/\\[slug\\].js'));
 });
