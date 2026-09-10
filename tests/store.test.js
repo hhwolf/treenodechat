@@ -174,6 +174,11 @@ test('stores the chat tree, rules documents, and ship settings', (t) => {
   assert.throws(() => store.appendChatNode(project.id, { role: 'user', parentId: 'missing', content: 'orphan' }), /Parent chat node not found/);
   assert.throws(() => store.appendChatNode(project.id, { role: 'oracle', content: 'nope' }), /role is invalid/);
 
+  const many = Array.from({ length: 6 }, (_, index) => ({ label: `Step ${index}`, prompt: `Do thing ${index} with [detail].` }));
+  const withSteps = store.appendChatNode(project.id, { role: 'assistant', parentId: pick.id, content: 'Next options.', nextSteps: [...many, { label: 'no prompt' }] });
+  assert.equal(withSteps.nextSteps.length, 4);
+  assert.equal(store.getProject(project.id).chatNodes.find((node) => node.id === withSteps.id).nextSteps.length, 4);
+
   const withBranch = store.updateChatNode(project.id, reply.id, { engineBranchId: 'branch-1', actions: [{ tool: 'start_agent_run', runId: 'run-1', status: 'done', result: 'completed' }] });
   assert.equal(withBranch.engineBranchId, 'branch-1');
   assert.equal(withBranch.actions[0].status, 'done');

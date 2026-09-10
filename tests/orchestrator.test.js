@@ -124,7 +124,13 @@ test('records ship proposals as needing approval without executing anything', as
 test('forces a final no-tool round when the model keeps calling tools', async (t) => {
   const pages = [];
   for (let index = 0; index < 4; index += 1) pages.push(callPayload('get_run_status', { runId: 'missing' }, `call-${index}`));
-  pages.push(textPayload('Ran out of budget; here is where things stand.'));
+  pages.push({
+    output_text: 'Ran out of budget; here is where things stand.',
+    output: [
+      { type: 'message', content: [{ type: 'output_text', text: 'Ran out of budget; here is where things stand.' }] },
+      { type: 'function_call', name: 'suggest_next_steps', arguments: JSON.stringify({ steps: [{ label: 'Check the run', prompt: 'Check on run [id] and summarize it.' }, { label: 'Plan next', prompt: 'What should we do next?' }] }), call_id: 'call-final' }
+    ]
+  });
   const { store, project, orchestrator, fetchImpl } = setup(t, pages);
   const userNode = store.appendChatNode(project.id, { role: 'user', content: 'Loop forever' });
   const turn = await orchestrator.runChatTurn(project.id, userNode);
@@ -133,8 +139,11 @@ test('forces a final no-tool round when the model keeps calling tools', async (t
   assert.equal(turn.actions.length, 4);
   assert.ok(turn.actions.every((action) => action.status === 'error'));
   const finalRequest = fetchImpl.requests.at(-1).body;
-  assert.equal(finalRequest.tools, undefined);
+  assert.equal(finalRequest.tools.length, 1);
+  assert.equal(finalRequest.tools[0].name, 'suggest_next_steps');
   assert.match(finalRequest.input.at(-1).content, /Wrap up now/);
+  assert.equal(turn.nextSteps.length, 2);
+  assert.equal(turn.nextSteps[0].label, 'Check the run');
 });
 
 test('falls back to a deterministic local reply without a configured model', async (t) => {
@@ -163,4 +172,41 @@ test('collects the path from root to leaf and reuses the nearest engine branch',
   const request = fetchImpl.requests[0].body;
   assert.equal(request.input.length, 3);
   assert.equal(request.input[1].role, 'assistant');
+});
+
+test('captures suggested next steps without recording actions and normalizes them', async (t) => {
+  const steps = [
+    { label: 'Refine the rules', prompt: 'Update CLAUDE.md to require [convention].' },
+    { label: 'Run an agent', prompt: 'Run an agent to add [feature] and verify it.' },
+    { label: 'Verify', prompt: 'Verify the latest run with the tests.' },
+    { label: 'Ship', prompt: 'Open a pull request for the accepted work.' },
+    { label: 'Extra', prompt: 'One over the cap.' },
+    { label: 'No prompt here' }
+  ];
+  const { store, project, orchestrator, fetchImpl } = setup(t, [
+    callPayload('suggest_next_steps', { steps }),
+    textPayload('Here is my answer, with follow-ups attached.')
+  ]);
+  const userNode = store.appendChatNode(project.id, { role: 'user', content: 'What now?' });
+  const turn = await orchestrator.runChatTurn(project.id, userNode);
+
+  assert.equal(turn.actions.length, 0);
+  assert.equal(turn.nextSteps.length, 4);
+  assert.equal(turn.nextSteps[0].prompt, 'Update CLAUDE.md to require [convention].');
+  assert.ok(turn.nextSteps.every((step) => step.id && step.label && step.prompt));
+  const second = fetchImpl.requests[1].body;
+  assert.match(second.input.find((item) => item.type === 'function_call_output').output, /noted/);
+});
+
+test('suppresses next steps when directions are proposed', async (t) => {
+  const { store, project, orchestrator } = setup(t, [{
+    output: [
+      { type: 'function_call', name: 'propose_directions', arguments: JSON.stringify({ directions: [{ label: 'Deep', summary: 'Go deep.' }, { label: 'Fast', summary: 'Go fast.' }], recommendedLabel: 'Fast' }), call_id: 'call-d' },
+      { type: 'function_call', name: 'suggest_next_steps', arguments: JSON.stringify({ steps: [{ label: 'Also this', prompt: 'Should be suppressed.' }] }), call_id: 'call-s' }
+    ]
+  }]);
+  const userNode = store.appendChatNode(project.id, { role: 'user', content: 'Which way?' });
+  const turn = await orchestrator.runChatTurn(project.id, userNode);
+  assert.equal(turn.directions.length, 2);
+  assert.deepEqual(turn.nextSteps, []);
 });

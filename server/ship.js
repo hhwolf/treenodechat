@@ -55,7 +55,7 @@ export function createShip({
       vercel: Boolean(vercelToken && project.shipSettings?.vercelProjectId)
     };
     const branch = integrationBranchName(project);
-    const result = { settings: project.shipSettings || {}, configured, branch, defaultBranch: null, compare: null, pulls: [], deployments: [], errors: {} };
+    const result = { settings: project.shipSettings || {}, configured, branch, defaultBranch: null, compare: null, pulls: [], deployments: [], testLink: null, errors: {} };
     if (configured.github) {
       try {
         const { owner } = parseGitHubRepository(project.repoPath);
@@ -82,6 +82,11 @@ export function createShip({
           ref: deployment.meta?.githubCommitRef || null,
           createdAt: deployment.createdAt || deployment.created
         }));
+        const ready = result.deployments.filter((deployment) => deployment.state === 'READY' && deployment.url);
+        const preview = ready.find((deployment) => deployment.ref === branch);
+        const production = ready.find((deployment) => deployment.target === 'production');
+        const picked = preview || production;
+        if (picked) result.testLink = { url: picked.url, ref: picked.ref, target: picked.target, state: picked.state, kind: preview ? 'integration-preview' : 'production' };
       } catch (error) {
         result.errors.vercel = error.message;
       }
@@ -112,14 +117,15 @@ export function createShip({
     return { merged: Boolean(merged.merged), sha: merged.sha || null, message: merged.message || '' };
   }
 
-  async function triggerDeployment(project, { ref } = {}) {
+  async function triggerDeployment(project, { ref, target } = {}) {
+    const deployTarget = target === 'preview' ? 'preview' : 'production';
     const { owner, repo } = parseGitHubRepository(project.repoPath);
     const deployment = await vercel(project, '/v13/deployments', {
       method: 'POST',
       body: JSON.stringify({
         name: project.shipSettings.vercelProjectId,
         project: project.shipSettings.vercelProjectId,
-        target: 'production',
+        ...(deployTarget === 'production' ? { target: 'production' } : {}),
         gitSource: { type: 'github', org: owner, repo, ref: String(ref || 'main') }
       })
     });

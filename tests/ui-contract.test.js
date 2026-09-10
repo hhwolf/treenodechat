@@ -72,3 +72,17 @@ test('ships accessible focus, reduced motion, and modal semantics', () => {
   assert.match(app, /aria-label="Threadline access code"/);
   assert.doesNotMatch(html, /app\.js|pretext-layout/);
 });
+
+test('suggests optional, fillable next steps and a direct product test link', () => {
+  assert.match(chat, /Optional next steps/);
+  assert.match(chat, /next-step-chip/);
+  assert.match(chat, /starterPrompts/);
+  assert.match(chat, /setSelectionRange/);
+  assert.ok(!/next-step-chip" .*onClick=\{\(\) => send\(/.test(chat));
+  assert.match(chat, /onClick=\{\(\) => onPick\(step\)\}/);
+  assert.match(app, /Open test link/);
+  assert.match(ship, /Test your product/);
+  assert.match(ship, /Deploy a test preview/);
+  assert.match(ship, /Add VERCEL_TOKEN and a project id in Ship settings to get a test link/);
+  assert.match(styles, /next-step-chip/);
+});

@@ -4,7 +4,29 @@ import { Button, Field, Icon, Modal } from './ui.jsx';
 import { childrenOf, deepestDescendant, pathTo } from './nodes.js';
 
 const MESSAGE_LIMIT = 8_000;
+const SLOT_PATTERN = /\[[^\[\]]{1,80}\]/;
 const activeRunStatuses = new Set(['queued', 'running', 'paused']);
+
+export function starterPrompts(project) {
+  const question = project.intent?.questions?.[0];
+  return [
+    { id: 'starter-plan', label: 'Plan the project', prompt: `Draft a fuller project description: expand "${project.intent?.objective || 'the objective'}" into scope, milestones, and open questions.` },
+    { id: 'starter-question', label: 'Resolve the first question', prompt: question ? `Let's resolve this first: ${question}` : 'What should we tackle first, and why?' },
+    project.repoPath
+      ? { id: 'starter-run', label: 'Start real work', prompt: 'Run an agent to [first concrete change] and verify it with the tests.' }
+      : { id: 'starter-setup', label: 'Get agent-ready', prompt: 'What do I need to connect or configure before agents can work here?' }
+  ];
+}
+
+function NextStepChips({ caption, steps, onPick }) {
+  if (!steps?.length) return null;
+  return <div className="next-steps">
+    <small>{caption}</small>
+    <div className="next-step-row">
+      {steps.map((step) => <button key={step.id} type="button" className="next-step-chip" title={step.prompt} onClick={() => onPick(step)}>{step.label}</button>)}
+    </div>
+  </div>;
+}
 
 const shipActionCopy = {
   create_pull_request: (args) => `Open a pull request: “${args.title || 'Untitled'}”`,
@@ -130,6 +152,7 @@ function ApprovalCard({ project, node, action, onResolved, notify }) {
 export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject, notify, verifyCommand }) {
   const [message, setMessage] = useState('');
   const [sending, setSending] = useState(false);
+  const [slotMode, setSlotMode] = useState(false);
   const [target, setTarget] = useState(null);
   const [diffRun, setDiffRun] = useState(null);
   const [integrateRun, setIntegrateRun] = useState(null);
@@ -159,6 +182,7 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
       applyProject(result.project);
       onSelectLeaf(result.assistantNode.id);
       setMessage('');
+      setSlotMode(false);
       setTarget(null);
     } catch (error) {
       notify(error.message);
@@ -172,6 +196,27 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
     parentNodeId: leaf?.id ?? null,
     kind: 'run-update'
   });
+
+  const selectSlot = (from = 0) => {
+    const textarea = composerRef.current;
+    if (!textarea) return false;
+    const match = SLOT_PATTERN.exec(textarea.value.slice(from));
+    if (!match) return false;
+    textarea.focus();
+    textarea.setSelectionRange(from + match.index, from + match.index + match[0].length);
+    return true;
+  };
+
+  const insertSuggestion = (step) => {
+    setMessage(step.prompt);
+    setSlotMode(SLOT_PATTERN.test(step.prompt));
+    window.requestAnimationFrame(() => {
+      const textarea = composerRef.current;
+      if (!textarea) return;
+      textarea.focus();
+      if (!selectSlot(0)) textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+    });
+  };
 
   const pickDirection = (node, direction) => {
     const explored = (children.get(node.id) || []).find((child) => child.directionId === direction.id);
@@ -196,6 +241,7 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
         <span className="agent-mark"><Icon name="terminal" size={22} /></span>
         <h2>Talk to your project</h2>
         <p>Describe what you want. Threadline answers, deploys coding agents in isolated sandboxes when work is needed, and proposes directions when a real decision is open. Everything lands in the tree.</p>
+        <NextStepChips caption="Try one of these" steps={starterPrompts(project)} onPick={insertSuggestion} />
       </div>}
       {path.map((node) => <article key={node.id} className={`chat-node ${node.role}`}>
         <div className="chat-bubble">
@@ -210,6 +256,8 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
           onIntegrate={setIntegrateRun}
         />)}
         {(node.actions || []).filter((action) => action.status === 'needs_approval').map((action) => <ApprovalCard key={action.id} project={project} node={node} action={action} notify={notify} onResolved={(updated, toast) => { applyProject(updated, toast); send({ message: toast, parentNodeId: leaf?.id ?? null, kind: 'run-update' }); }} />)}
+        {node.role === 'assistant' && node.id === leaf?.id && !sending && !node.directions?.length && !(children.get(node.id) || []).length
+          && <NextStepChips caption="Optional next steps" steps={node.nextSteps} onPick={insertSuggestion} />}
         {node.directions?.length > 0 && <div className="direction-cards">
           {node.directions.map((direction) => {
             const explored = (children.get(node.id) || []).some((child) => child.directionId === direction.id);
@@ -235,8 +283,14 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
           value={message}
           aria-label="Message"
           placeholder={project.repoPath ? 'Describe what you want to do — the model deploys agents when work is needed.' : 'Connect a repository in Rules to let agents work on code, or just start planning here.'}
-          onChange={(event) => setMessage(event.target.value)}
-          onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); send(); } }}
+          onChange={(event) => { setMessage(event.target.value); if (!event.target.value) setSlotMode(false); }}
+          onKeyDown={(event) => {
+            if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); send(); return; }
+            if (event.key === 'Tab' && slotMode && !event.shiftKey) {
+              if (selectSlot(event.currentTarget.selectionEnd)) { event.preventDefault(); return; }
+              setSlotMode(false);
+            }
+          }}
         />
         <Button type="submit" variant="primary" icon="send" disabled={sending || !message.trim() || message.length > MESSAGE_LIMIT}>{sending ? 'Sending…' : 'Send'}</Button>
       </div>

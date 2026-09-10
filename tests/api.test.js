@@ -303,6 +303,7 @@ test('runs a chat turn, persists the tree, and gates action approvals', async (t
       assistantNodeId: undefined,
       content: `Reply to: ${userNode.content}`,
       directions: [{ label: 'Technical', summary: 'Go deep.' }, { label: 'Practical', summary: 'Ship now.', recommended: true }],
+      nextSteps: [{ label: 'Verify it', prompt: 'Verify the latest run.' }],
       actions: [{ tool: 'trigger_deployment', args: { ref: 'main' }, status: 'needs_approval' }],
       engineBranchId: null
     })
@@ -323,6 +324,8 @@ test('runs a chat turn, persists the tree, and gates action approvals', async (t
   assert.equal(first.payload.userNode.role, 'user');
   assert.equal(first.payload.assistantNode.parentId, first.payload.userNode.id);
   assert.equal(first.payload.assistantNode.directions.length, 2);
+  assert.equal(first.payload.assistantNode.nextSteps.length, 1);
+  assert.equal(first.payload.assistantNode.nextSteps[0].prompt, 'Verify the latest run.');
   assert.equal(first.payload.project.chatNodes.length, 2);
 
   const direction = first.payload.assistantNode.directions[1];
