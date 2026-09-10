@@ -112,3 +112,39 @@ test('surfaces configuration gaps and scrubs tokens from errors', async () => {
   const status = await createShip({ githubToken: '', vercelToken: '', fetchImpl: async () => ({ ok: true, status: 200, json: async () => ({}) }) }).status(project);
   assert.deepEqual(status.configured, { github: false, vercel: false });
 });
+
+test('picks the best test link and supports preview deployments', async () => {
+  const deployments = [
+    { uid: 'dpl_new', url: 'preview-branch.vercel.app', readyState: 'READY', target: 'preview', meta: { githubCommitRef: 'threadline/preflop-lab-abc123' }, createdAt: 9 },
+    { uid: 'dpl_prod', url: 'prod.vercel.app', readyState: 'READY', target: 'production', createdAt: 5 }
+  ];
+  const make = (list) => createShip({
+    githubToken: '', vercelToken: 'vc-tok',
+    fetchImpl: async (url) => String(url).includes('/v6/deployments')
+      ? { ok: true, status: 200, json: async () => ({ deployments: list }) }
+      : { ok: true, status: 200, json: async () => ({}) }
+  });
+
+  const withPreview = await make(deployments).status(project);
+  assert.equal(withPreview.testLink.kind, 'integration-preview');
+  assert.equal(withPreview.testLink.url, 'https://preview-branch.vercel.app');
+
+  const productionOnly = await make([deployments[1]]).status(project);
+  assert.equal(productionOnly.testLink.kind, 'production');
+
+  const nothingReady = await make([{ uid: 'x', url: 'x.vercel.app', readyState: 'BUILDING', target: 'production', createdAt: 1 }]).status(project);
+  assert.equal(nothingReady.testLink, null);
+
+  const calls = [];
+  const ship = createShip({
+    githubToken: 'gh', vercelToken: 'vc-tok',
+    fetchImpl: async (url, options = {}) => {
+      calls.push({ url: String(url), body: options.body ? JSON.parse(options.body) : null });
+      return { ok: true, status: 200, json: async () => ({ id: 'dpl_preview', url: 'p.vercel.app', readyState: 'QUEUED' }) };
+    }
+  });
+  await ship.triggerDeployment(project, { ref: 'threadline/preflop-lab-abc123', target: 'preview' });
+  assert.equal(calls[0].body.target, undefined);
+  await ship.triggerDeployment(project, { ref: 'main', target: 'weird' });
+  assert.equal(calls[1].body.target, 'production');
+});

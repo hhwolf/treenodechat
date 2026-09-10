@@ -52,6 +52,14 @@ export function normalizeChatActions(actions) {
   })).filter((item) => item.tool);
 }
 
+export function normalizeChatNextSteps(steps) {
+  return (Array.isArray(steps) ? steps : []).slice(0, 4).map((item) => ({
+    id: item?.id || randomUUID(),
+    label: String(item?.label || '').trim().slice(0, 60),
+    prompt: String(item?.prompt || '').trim().slice(0, 600)
+  })).filter((item) => item.label && item.prompt);
+}
+
 export function normalizeChatNode(input, timestamp = now()) {
   if (!CHAT_NODE_ROLES.has(input?.role)) throw new Error('Chat node role is invalid');
   const content = String(input.content || '').trim().slice(0, 20_000);
@@ -64,6 +72,7 @@ export function normalizeChatNode(input, timestamp = now()) {
     directionId: input.directionId || null,
     directions: normalizeChatDirections(input.directions),
     actions: normalizeChatActions(input.actions),
+    nextSteps: normalizeChatNextSteps(input.nextSteps),
     engineBranchId: input.engineBranchId || null,
     createdAt: timestamp
   };
@@ -224,6 +233,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       direction_id TEXT,
       directions_json TEXT NOT NULL DEFAULT '[]',
       actions_json TEXT NOT NULL DEFAULT '[]',
+      next_steps_json TEXT NOT NULL DEFAULT '[]',
       engine_branch_id TEXT,
       created_at TEXT NOT NULL
     );
@@ -257,6 +267,8 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
   if (!runColumns.has('integration_json')) db.exec("ALTER TABLE agent_runs ADD COLUMN integration_json TEXT NOT NULL DEFAULT '{}'");
   if (!runColumns.has('verification_json')) db.exec("ALTER TABLE agent_runs ADD COLUMN verification_json TEXT NOT NULL DEFAULT '{}'");
   if (!runColumns.has('node_id')) db.exec('ALTER TABLE agent_runs ADD COLUMN node_id TEXT');
+  const chatNodeColumns = new Set(db.prepare('PRAGMA table_info(chat_nodes)').all().map((column) => column.name));
+  if (!chatNodeColumns.has('next_steps_json')) db.exec("ALTER TABLE chat_nodes ADD COLUMN next_steps_json TEXT NOT NULL DEFAULT '[]'");
 
   const event = (projectId, kind, summary) => {
     db.prepare('INSERT INTO events VALUES (?, ?, ?, ?, ?)').run(randomUUID(), projectId, kind, summary, now());
@@ -309,6 +321,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     directionId: row.direction_id,
     directions: parse(row.directions_json, []),
     actions: parse(row.actions_json, []),
+    nextSteps: parse(row.next_steps_json, []),
     engineBranchId: row.engine_branch_id,
     createdAt: row.created_at
   });
@@ -651,9 +664,10 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     if (node.parentId && !db.prepare('SELECT id FROM chat_nodes WHERE id = ? AND project_id = ?').get(node.parentId, projectId)) {
       throw new Error('Parent chat node not found');
     }
-    db.prepare('INSERT INTO chat_nodes VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(
+    db.prepare(`INSERT INTO chat_nodes (id, project_id, parent_id, role, content, direction_id, directions_json, actions_json, next_steps_json, engine_branch_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(
       node.id, projectId, node.parentId, node.role, node.content, node.directionId,
-      JSON.stringify(node.directions), JSON.stringify(node.actions), node.engineBranchId, node.createdAt
+      JSON.stringify(node.directions), JSON.stringify(node.actions), JSON.stringify(node.nextSteps), node.engineBranchId, node.createdAt
     );
     touchProject(projectId);
     return node;

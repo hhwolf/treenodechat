@@ -314,6 +314,7 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
           parentId: userNode.id,
           content: turn.content,
           directions: turn.directions,
+          nextSteps: turn.nextSteps,
           actions: turn.actions,
           engineBranchId: turn.engineBranchId
         });

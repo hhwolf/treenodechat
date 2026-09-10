@@ -94,6 +94,7 @@ export function App() {
   const [leafId, setLeafId] = useState(null);
   const [modal, setModal] = useState(null);
   const [toast, setToast] = useState('');
+  const [shipStatus, setShipStatus] = useState(null);
 
   const notify = (message) => {
     setToast(message);
@@ -166,6 +167,17 @@ export function App() {
     return () => window.clearInterval(interval);
   }, [project?.id, project?.agentRuns?.map((run) => `${run.id}:${run.status}:${run.verification?.status || ''}`).join('|')]);
 
+  const refreshShip = async (projectId = project?.id) => {
+    if (!projectId) return;
+    try { setShipStatus(await api.shipStatus(projectId)); }
+    catch { setShipStatus(null); }
+  };
+
+  useEffect(() => {
+    setShipStatus(null);
+    if (project?.repoPath) refreshShip(project.id);
+  }, [project?.id, project?.repoPath]);
+
   const unlockHostedWorkspace = async (token) => {
     setAccessToken(token);
     try { await loadWorkspace(); }
@@ -203,6 +215,9 @@ export function App() {
         </button>)}
       </nav>
       <div className="top-actions">
+        {shipStatus?.testLink && <a className="button secondary test-link" href={shipStatus.testLink.url} target="_blank" rel="noreferrer" title={`${shipStatus.testLink.kind === 'integration-preview' ? 'Preview of the accepted agent work' : 'Production deployment'} · ${shipStatus.testLink.url}`}>
+          <Icon name="play" />Open test link<em>{shipStatus.testLink.kind === 'integration-preview' ? 'preview' : 'prod'}</em>
+        </a>}
         <span className="local-state"><i></i>{health?.mode === 'cloud' ? 'Saved to cloud' : 'Saved locally'}</span>
         <Button onClick={() => setModal('project')} icon="plus">New project</Button>
       </div>
@@ -212,7 +227,7 @@ export function App() {
         onSelectLeaf={(nodeId) => selectLeaf(project.id, nodeId)} applyProject={applyProject} notify={notify} />}
       {tab === 'tree' && <TreeView project={project} leafId={leafId} onOpen={(nodeId) => { selectLeaf(project.id, nodeId); setTab('chat'); }} />}
       {tab === 'rules' && <RulesView project={project} applyProject={applyProject} notify={notify} />}
-      {tab === 'ship' && <ShipView project={project} notify={notify} />}
+      {tab === 'ship' && <ShipView project={project} notify={notify} status={shipStatus} onRefresh={refreshShip} />}
     </main>
     {modal === 'project' && <NewProjectModal repositoryInput={health?.repositoryInput} onClose={() => setModal(null)} onCreate={createProject} />}
     {toast && <div className="toast" role="status"><Icon name="check" />{toast}</div>}

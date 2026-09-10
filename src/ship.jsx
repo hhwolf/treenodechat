@@ -2,8 +2,7 @@ import { useEffect, useState } from 'react';
 import { api } from './api.js';
 import { Button, Icon, confirmTyped, timeAgo } from './ui.jsx';
 
-export function ShipView({ project, notify }) {
-  const [status, setStatus] = useState(null);
+export function ShipView({ project, notify, status, onRefresh }) {
   const [envs, setEnvs] = useState(null);
   const [settings, setSettings] = useState(project.shipSettings || { vercelProjectId: '', vercelTeamId: '' });
   const [pr, setPr] = useState({ title: '', body: '' });
@@ -12,14 +11,11 @@ export function ShipView({ project, notify }) {
   const [busy, setBusy] = useState(false);
 
   const refresh = async () => {
-    try {
-      const loaded = await api.shipStatus(project.id);
-      setStatus(loaded);
-      if (!deployRef) setDeployRef(loaded.branch);
-      if (loaded.configured.vercel) api.listEnv(project.id).then((result) => setEnvs(result.envs)).catch(() => setEnvs(null));
-    } catch (error) { notify(error.message); }
+    await onRefresh(project.id);
+    if (project.shipSettings?.vercelProjectId) api.listEnv(project.id).then((result) => setEnvs(result.envs)).catch(() => setEnvs(null));
   };
-  useEffect(() => { setStatus(null); setEnvs(null); refresh(); }, [project.id]);
+  useEffect(() => { setEnvs(null); refresh(); }, [project.id]);
+  useEffect(() => { if (status?.branch && !deployRef) setDeployRef(status.branch); }, [status?.branch]);
 
   const act = async (fn, toast) => {
     setBusy(true);
@@ -28,7 +24,7 @@ export function ShipView({ project, notify }) {
     finally { setBusy(false); }
   };
 
-  if (!status) return <div className="ship-view"><p className="quiet-empty">Loading ship status…</p></div>;
+  if (!status) return <div className="ship-view"><p className="quiet-empty">Loading ship status… {!project.repoPath && 'Connect a repository in Rules first.'}</p></div>;
 
   return <div className="ship-view">
     <header className="view-heading"><div><span className="eyebrow">Ship</span><h1>From accepted code to production</h1><p>Push the threadline branch through a pull request, deploy on Vercel, and manage environment variables. Every action here requires your explicit confirmation.</p></div><Button onClick={refresh}>Refresh</Button></header>
@@ -61,6 +57,23 @@ export function ShipView({ project, notify }) {
         <Button type="submit" icon="branch" disabled={busy || !pr.title.trim()}>Create pull request</Button>
       </form>}
       {!status.configured.github && <p className="quiet-empty">Connect a GitHub repository and configure GITHUB_TOKEN to ship.</p>}
+    </section>
+
+    <section className="rules-card test-link-card">
+      <header><div><span className="eyebrow">Test it yourself</span><h2>Test your product</h2><p>{status.testLink
+        ? `A ${status.testLink.kind === 'integration-preview' ? `preview of the accepted agent work (${status.testLink.ref})` : 'production deployment'} is live.`
+        : status.configured.vercel
+          ? 'No live deployment yet — deploy a test preview of the accepted agent work.'
+          : 'Add VERCEL_TOKEN and a project id in Ship settings to get a test link.'}</p></div>
+        {status.testLink
+          ? <a className="button primary" href={status.testLink.url} target="_blank" rel="noreferrer">Open test link</a>
+          : status.configured.vercel && <Button variant="primary" icon="play" disabled={busy} onClick={() => {
+              if (window.confirm(`Deploy a preview of ${status.branch} so you can test it?`)) {
+                act(() => api.triggerDeployment(project.id, { ref: status.branch, target: 'preview' }), 'Test preview building — refresh in a minute')
+                  .then(() => window.setTimeout(refresh, 10_000));
+              }
+            }}>Deploy a test preview</Button>}
+      </header>
     </section>
 
     {status.configured.vercel && <section className="rules-card">

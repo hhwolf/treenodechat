@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { normalizeChatDirections, taskBranchName } from './store.js';
+import { normalizeChatDirections, normalizeChatNextSteps, taskBranchName } from './store.js';
 import { formatRulesSection } from './documents.js';
 import { repositoryContext } from './repository.js';
 
@@ -39,6 +39,17 @@ const TOOLS = [
         recommendedLabel: { type: 'string' }
       },
       required: ['directions', 'recommendedLabel'], additionalProperties: false
+    }
+  },
+  {
+    type: 'function', name: 'suggest_next_steps',
+    description: 'Call exactly once right before finishing every reply (skip only when calling propose_directions): 2-4 concrete prompts the user could optionally send next, spanning planning or rules, agent runs, verification, and shipping. Use [brackets] for parts the user should fill in. Never repeat the user\'s last message.',
+    parameters: {
+      type: 'object',
+      properties: {
+        steps: { type: 'array', items: { type: 'object', properties: { label: { type: 'string', description: 'Short chip label.' }, prompt: { type: 'string', description: 'The full prompt to prefill, with [fillable] slots where useful.' } }, required: ['label', 'prompt'], additionalProperties: false } }
+      },
+      required: ['steps'], additionalProperties: false
     }
   },
   {
@@ -124,7 +135,8 @@ function buildSystemPrompt(project, engineBranchId) {
 - start_agent_run for any code change or investigation that needs the repository; keep each task narrow and verifiable. Runs continue in the background — never claim results you have not read via get_run_status, and never fabricate run output.
 - verify_run after a run completes when tests would add confidence; integrate_run only for reviewed changes the user asked to accept.
 - create_pull_request / merge_pull_request / trigger_deployment / rollback_deployment / set_env_var only PROPOSE the action; each requires the user's explicit approval in the interface. Say clearly what you proposed and why.
-- propose_directions only at genuinely open decisions where 2-3 directions differ materially (for example a deep-research path versus a practical build path). Give reasoning in each summary and recommend one. Otherwise just answer.`,
+- propose_directions only at genuinely open decisions where 2-3 directions differ materially (for example a deep-research path versus a practical build path). Give reasoning in each summary and recommend one. Otherwise just answer.
+- End every reply by calling suggest_next_steps with 2-4 optional prompts the user may click and edit (use [brackets] for fill-in parts; skip only when you call propose_directions).`,
     `Project intent:
 Objective: ${project.intent.objective}
 Desired outcome: ${project.intent.outcome}
@@ -142,6 +154,7 @@ function localFallback(project, userNode) {
     source: 'local',
     content: `The model provider is not configured, so I cannot orchestrate this yet. Set OPENAI_API_KEY and OPENAI_MODEL, then resend your message.\n\nWhat I can already see: the project intent is "${project.intent.objective}", ${project.documents.length} rules document${project.documents.length === 1 ? '' : 's'} and ${project.agentRuns.length} agent run${project.agentRuns.length === 1 ? '' : 's'} are stored. Your message was: "${userNode.content.slice(0, 200)}"`,
     directions: [],
+    nextSteps: [],
     actions: [],
     engineBranchId: null,
     assistantNodeId: randomUUID()
@@ -167,6 +180,10 @@ export function createOrchestrator(store, {
   async function executeTool(project, state, call) {
     let args = {};
     try { args = JSON.parse(call.arguments || '{}'); } catch { /* treated as empty arguments below */ }
+    if (call.name === 'suggest_next_steps') {
+      state.nextSteps = normalizeChatNextSteps(args.steps);
+      return { status: 'noted', note: 'The next-step chips will be shown to the user. Finish your reply now.' };
+    }
     if (call.name === 'set_env_var') args = { key: args.key, target: args.target };
     const record = {
       id: randomUUID(), tool: call.name, args: JSON.stringify(args).length > 2_000 ? {} : args,
@@ -255,6 +272,7 @@ export function createOrchestrator(store, {
       assistantNodeId: randomUUID(),
       actions: [],
       directions: [],
+      nextSteps: [],
       terminal: false,
       engineBranchId: [...path].reverse().find((node) => node.engineBranchId)?.engineBranchId || null
     };
@@ -263,23 +281,28 @@ export function createOrchestrator(store, {
     const startedAt = Date.now();
     let text = '';
 
+    const suggestTool = TOOLS.find((tool) => tool.name === 'suggest_next_steps');
     for (let round = 0; round <= MAX_TOOL_ROUNDS; round += 1) {
       const finalRound = round === MAX_TOOL_ROUNDS || state.terminal || Date.now() - startedAt > TURN_BUDGET_MS;
-      if (finalRound && round > 0) input.push({ role: 'user', content: '[Wrap up now: summarize what you did and what is pending. Do not call tools.]' });
+      if (finalRound && round > 0) input.push({ role: 'user', content: '[Wrap up now: summarize what you did and what is pending. Call suggest_next_steps once if you have not; call no other tools.]' });
       const response = await fetchImpl('https://api.openai.com/v1/responses', {
         method: 'POST',
         headers: { 'content-type': 'application/json', authorization: `Bearer ${apiKey}` },
         body: JSON.stringify({
           model, instructions: system, input, store: false,
           reasoning: { effort: reasoningEffort },
-          ...(finalRound ? {} : { tools: TOOLS, tool_choice: 'auto' })
+          tools: finalRound ? [suggestTool] : TOOLS,
+          tool_choice: 'auto'
         })
       });
       if (!response.ok) throw new Error(`Model provider returned ${response.status}`);
       const payload = await response.json();
       const calls = (payload.output || []).filter((item) => item.type === 'function_call');
       text = extractText(payload) || text;
-      if (!calls.length || finalRound) break;
+      if (!calls.length || finalRound) {
+        for (const call of calls.filter((item) => item.name === 'suggest_next_steps')) await executeTool(project, state, call);
+        break;
+      }
       for (const call of calls) {
         input.push({ type: 'function_call', name: call.name, arguments: call.arguments, call_id: call.call_id });
         const result = await executeTool(project, state, call);
@@ -292,6 +315,7 @@ export function createOrchestrator(store, {
       source: 'model',
       content: text || (state.directions.length ? 'Choose a direction below to continue.' : 'Done — see the actions above.'),
       directions: state.directions,
+      nextSteps: state.directions.length ? [] : state.nextSteps,
       actions: state.actions,
       engineBranchId: state.engineBranchId,
       assistantNodeId: state.assistantNodeId

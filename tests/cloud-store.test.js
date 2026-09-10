@@ -76,8 +76,10 @@ test('stores the chat tree, documents, and ship settings in the hosted document'
   const root = await store.appendChatNode(project.id, { role: 'user', content: 'Plan the trainer' });
   const reply = await store.appendChatNode(project.id, {
     role: 'assistant', parentId: root.id, content: 'Pick a direction.',
-    directions: [{ label: 'Technical', summary: 'Deep dive.' }, { label: 'Practical', summary: 'Ship now.', recommended: true }]
+    directions: [{ label: 'Technical', summary: 'Deep dive.' }, { label: 'Practical', summary: 'Ship now.', recommended: true }],
+    nextSteps: [{ label: 'Refine rules', prompt: 'Update CLAUDE.md with [rule].' }]
   });
+  assert.equal(reply.nextSteps.length, 1);
   await assert.rejects(store.appendChatNode(project.id, { role: 'user', parentId: 'missing', content: 'orphan' }), /Parent chat node not found/);
   await store.updateChatNode(project.id, reply.id, { engineBranchId: 'branch-1' });
 
