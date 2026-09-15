@@ -291,6 +291,7 @@ export function createOrchestrator(store, {
         body: JSON.stringify({
           model, instructions: system, input, store: false,
           reasoning: { effort: reasoningEffort },
+          include: ['reasoning.encrypted_content'],
           tools: finalRound ? [suggestTool] : TOOLS,
           tool_choice: 'auto'
         })
@@ -303,8 +304,11 @@ export function createOrchestrator(store, {
         for (const call of calls.filter((item) => item.name === 'suggest_next_steps')) await executeTool(project, state, call);
         break;
       }
+      // Reasoning models require their complete output items (including the
+      // paired reasoning items) to be resent with each function_call, or the
+      // next request is rejected.
+      input.push(...(payload.output || []));
       for (const call of calls) {
-        input.push({ type: 'function_call', name: call.name, arguments: call.arguments, call_id: call.call_id });
         const result = await executeTool(project, state, call);
         input.push({ type: 'function_call_output', call_id: call.call_id, output: JSON.stringify(result) });
       }
