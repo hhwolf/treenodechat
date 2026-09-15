@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from './api.js';
 import { Button, Field, Icon, Modal } from './ui.jsx';
 import { childrenOf, deepestDescendant, pathTo } from './nodes.js';
@@ -29,6 +29,7 @@ function NextStepChips({ caption, steps, onPick }) {
 }
 
 const shipActionCopy = {
+  ship_release: (args) => `Ship it: merge “${args.title || 'the accepted work'}” and deploy production`,
   create_pull_request: (args) => `Open a pull request: “${args.title || 'Untitled'}”`,
   merge_pull_request: (args) => `Merge pull request #${args.number}`,
   trigger_deployment: (args) => `Deploy ${args.ref || 'main'} to production on Vercel`,
@@ -114,6 +115,7 @@ function ApprovalCard({ project, node, action, onResolved, notify }) {
   const approve = async () => {
     setBusy(true);
     try {
+      if (action.tool === 'ship_release') await api.shipRelease(project.id, { title: action.args.title, body: action.args.body });
       if (action.tool === 'create_pull_request') await api.createPullRequest(project.id, { title: action.args.title, body: action.args.body });
       if (action.tool === 'merge_pull_request') await api.mergePullRequest(project.id, action.args.number);
       if (action.tool === 'trigger_deployment') await api.triggerDeployment(project.id, { ref: action.args.ref });
@@ -235,6 +237,26 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
     ? uniqueRuns(leaf).find((run) => run.status === 'completed' || run.status === 'failed')
     : null;
 
+  // In direct mode the model continues on its own when a run finishes; the
+  // trailing-notice cap keeps a misbehaving loop from running unattended.
+  const autoTurns = useMemo(() => {
+    let count = 0;
+    for (let index = path.length - 1; index >= 0; index -= 1) {
+      if (path[index].role === 'user') break;
+      if (path[index].role === 'notice') count += 1;
+    }
+    return count;
+  }, [leafId, nodes.length]);
+  const directMode = project.autonomy !== 'review';
+  const autoPaused = autoTurns >= 6;
+  const autoContinued = useRef(new Set());
+  useEffect(() => {
+    if (!directMode || sending || autoPaused || !leafRunDone) return;
+    if (autoContinued.current.has(leafRunDone.id)) return;
+    autoContinued.current.add(leafRunDone.id);
+    continueWithRun(leafRunDone);
+  }, [directMode, sending, autoPaused, leafRunDone?.id, leafRunDone?.status]);
+
   return <div className="chat-view">
     <div className="chat-scroll">
       {!nodes.length && <div className="chat-empty">
@@ -270,8 +292,11 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
         </div>}
       </article>)}
       {sending && <article className="chat-node assistant"><div className="chat-bubble thinking"><p>Thinking…</p></div></article>}
-      {leafRunDone && !sending && <div className="continue-row"><Button icon="play" onClick={() => continueWithRun(leafRunDone)}>Continue with the run result</Button></div>}
-      {leafRunActive && !sending && <p className="quiet-empty">An agent run is in progress — live updates stream into its card above.</p>}
+      {leafRunDone && !sending && (!directMode || autoPaused) && <div className="continue-row">
+        {autoPaused && <p className="quiet-empty">Direct mode paused after several automatic steps — continue when ready.</p>}
+        <Button icon="play" onClick={() => continueWithRun(leafRunDone)}>Continue with the run result</Button>
+      </div>}
+      {leafRunActive && !sending && <p className="quiet-empty">An agent run is in progress — live updates stream into its card above{directMode ? '; the assistant continues automatically when it finishes' : ''}.</p>}
       <div ref={endRef} />
     </div>
     <form className="chat-composer" onSubmit={(event) => { event.preventDefault(); send(); }}>
@@ -294,9 +319,22 @@ export function ChatView({ project, adapter, leafId, onSelectLeaf, applyProject,
         />
         <Button type="submit" variant="primary" icon="send" disabled={sending || !message.trim() || message.length > MESSAGE_LIMIT}>{sending ? 'Sending…' : 'Send'}</Button>
       </div>
-      <small className="composer-note">{adapter?.available
-        ? `Agents run isolated (${adapter.name}) and stay review-only until you accept changes.`
-        : adapter?.error || 'Coding agents are unavailable; chat still works.'}{message.length > MESSAGE_LIMIT * 0.8 ? ` · ${message.length}/${MESSAGE_LIMIT}` : ''}</small>
+      <div className="composer-note-row">
+        <button type="button" className={`autonomy-toggle ${directMode ? 'on' : ''}`} title={directMode
+          ? 'Direct mode: the assistant implements, verifies, and integrates without waiting. Merging and deploying still need your approval.'
+          : 'Review mode: the assistant waits for you between steps.'}
+          onClick={async () => {
+            try {
+              const result = await api.updateProjectSettings(project.id, { autonomy: directMode ? 'review' : 'direct' });
+              applyProject(result.project, directMode ? 'Review mode: the assistant waits for you between steps' : 'Direct mode: the assistant implements without waiting');
+            } catch (error) { notify(error.message); }
+          }}><i></i>Direct mode {directMode ? 'on' : 'off'}</button>
+        <small className="composer-note">{adapter?.available
+          ? directMode
+            ? `Agents run isolated (${adapter.name}); passing work is integrated automatically — shipping still needs your approval.`
+            : `Agents run isolated (${adapter.name}) and stay review-only until you accept changes.`
+          : adapter?.error || 'Coding agents are unavailable; chat still works.'}{message.length > MESSAGE_LIMIT * 0.8 ? ` · ${message.length}/${MESSAGE_LIMIT}` : ''}</small>
+      </div>
     </form>
     {diffRun && <DiffModal project={project} run={runsById.get(diffRun.id) || diffRun} onClose={() => setDiffRun(null)} />}
     {integrateRun && <IntegrationModal project={project} run={runsById.get(integrateRun.id) || integrateRun} onClose={() => setIntegrateRun(null)}

@@ -28,8 +28,8 @@ function getResources() {
   if (resources) return resources;
   const store = createCloudStore();
   const agentRuntime = createSandboxRuntime(store);
-  const orchestrator = createOrchestrator(store, { agentRuntime });
-  const ship = createShip({});
+  const ship = createShip({ store });
+  const orchestrator = createOrchestrator(store, { agentRuntime, ship });
   resources = {
     store,
     agentRuntime,

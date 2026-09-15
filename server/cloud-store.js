@@ -20,6 +20,7 @@ function normalizeProjectDocument(project) {
   project.documents ||= [];
   project.shipSettings = { ...defaultShipSettings(), ...(project.shipSettings || {}) };
   project.verifyCommand ||= '';
+  project.autonomy = project.autonomy === 'review' ? 'review' : 'direct';
   return project;
 }
 
@@ -522,10 +523,13 @@ export function createCloudStore(connectionString = process.env.DATABASE_URL, op
     return result.rows[0]?.patch || null;
   }
 
-  async function updateProjectSettings(projectId, { verifyCommand } = {}) {
+  async function updateProjectSettings(projectId, updates = {}) {
     return mutate(projectId, (project) => {
-      project.verifyCommand = String(verifyCommand || '').trim().slice(0, 400);
-      addEvent(project, 'settings', project.verifyCommand ? 'Verify command updated.' : 'Verify command cleared.');
+      if (updates.verifyCommand !== undefined) project.verifyCommand = String(updates.verifyCommand || '').trim().slice(0, 400);
+      if (updates.autonomy !== undefined && ['review', 'direct'].includes(updates.autonomy)) project.autonomy = updates.autonomy;
+      addEvent(project, 'settings', updates.autonomy !== undefined
+        ? `Autonomy set to ${project.autonomy}.`
+        : project.verifyCommand ? 'Verify command updated.' : 'Verify command cleared.');
     });
   }
 

@@ -122,6 +122,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       integration_json TEXT NOT NULL DEFAULT '{}',
       verify_command TEXT NOT NULL DEFAULT '',
       ship_settings_json TEXT NOT NULL DEFAULT '{}',
+      autonomy TEXT NOT NULL DEFAULT 'direct',
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
     );
@@ -260,6 +261,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
   if (!projectColumns.has('integration_json')) db.exec("ALTER TABLE projects ADD COLUMN integration_json TEXT NOT NULL DEFAULT '{}'");
   if (!projectColumns.has('verify_command')) db.exec("ALTER TABLE projects ADD COLUMN verify_command TEXT NOT NULL DEFAULT ''");
   if (!projectColumns.has('ship_settings_json')) db.exec("ALTER TABLE projects ADD COLUMN ship_settings_json TEXT NOT NULL DEFAULT '{}'");
+  if (!projectColumns.has('autonomy')) db.exec("ALTER TABLE projects ADD COLUMN autonomy TEXT NOT NULL DEFAULT 'direct'");
   const runColumns = new Set(db.prepare('PRAGMA table_info(agent_runs)').all().map((column) => column.name));
   if (!runColumns.has('sandbox_name')) db.exec('ALTER TABLE agent_runs ADD COLUMN sandbox_name TEXT');
   if (!runColumns.has('command_id')) db.exec('ALTER TABLE agent_runs ADD COLUMN command_id TEXT');
@@ -441,6 +443,7 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
       repository: parse(row.repo_snapshot_json, {}),
       integration: parse(row.integration_json, {}),
       verifyCommand: row.verify_command || '',
+      autonomy: row.autonomy === 'review' ? 'review' : 'direct',
       shipSettings: { ...defaultShipSettings(), ...parse(row.ship_settings_json, {}) },
       chatNodes,
       documents,
@@ -739,10 +742,15 @@ export function createStore(path = ':memory:', { seed = false } = {}) {
     return getProject(projectId);
   }
 
-  function updateProjectSettings(projectId, { verifyCommand } = {}) {
-    if (!getProject(projectId)) return null;
-    db.prepare('UPDATE projects SET verify_command = ?, updated_at = ? WHERE id = ?').run(String(verifyCommand || '').trim().slice(0, 400), now(), projectId);
-    event(projectId, 'settings', verifyCommand ? 'Verify command updated.' : 'Verify command cleared.');
+  function updateProjectSettings(projectId, updates = {}) {
+    const project = getProject(projectId);
+    if (!project) return null;
+    const verifyCommand = updates.verifyCommand !== undefined ? String(updates.verifyCommand || '').trim().slice(0, 400) : project.verifyCommand;
+    const autonomy = updates.autonomy !== undefined && ['review', 'direct'].includes(updates.autonomy) ? updates.autonomy : project.autonomy;
+    db.prepare('UPDATE projects SET verify_command = ?, autonomy = ?, updated_at = ? WHERE id = ?').run(verifyCommand, autonomy, now(), projectId);
+    event(projectId, 'settings', updates.autonomy !== undefined
+      ? `Autonomy set to ${autonomy}.`
+      : verifyCommand ? 'Verify command updated.' : 'Verify command cleared.');
     return getProject(projectId);
   }
 

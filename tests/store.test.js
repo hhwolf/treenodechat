@@ -200,4 +200,13 @@ test('stores the chat tree, rules documents, and ship settings', (t) => {
 
   updated = store.updateShipSettings(project.id, { vercelProjectId: 'prj_123', vercelTeamId: 'team_9' });
   assert.deepEqual(updated.shipSettings, { vercelProjectId: 'prj_123', vercelTeamId: 'team_9' });
+
+  assert.equal(updated.autonomy, 'direct');
+  updated = store.updateProjectSettings(project.id, { autonomy: 'review' });
+  assert.equal(updated.autonomy, 'review');
+  updated = store.updateProjectSettings(project.id, { autonomy: 'reckless' });
+  assert.equal(updated.autonomy, 'review');
+  updated = store.updateProjectSettings(project.id, { verifyCommand: 'npm test' });
+  assert.equal(updated.autonomy, 'review');
+  assert.equal(updated.verifyCommand, 'npm test');
 });

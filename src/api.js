@@ -60,6 +60,7 @@ export const api = {
   shipStatus: (projectId) => request(`/api/projects/${projectId}/ship`),
   updateShipSettings: (projectId, input) => request(`/api/projects/${projectId}/ship/settings`, { method: 'PATCH', body: JSON.stringify(input) }),
   createPullRequest: (projectId, input) => request(`/api/projects/${projectId}/ship/pr`, { method: 'POST', body: JSON.stringify(input) }),
+  shipRelease: (projectId, input = {}) => request(`/api/projects/${projectId}/ship/release`, { method: 'POST', body: JSON.stringify(input) }),
   mergePullRequest: (projectId, number) => request(`/api/projects/${projectId}/ship/pr/${number}/merge`, { method: 'POST', body: '{}' }),
   triggerDeployment: (projectId, input) => request(`/api/projects/${projectId}/ship/deploy`, { method: 'POST', body: JSON.stringify(input) }),
   rollbackDeployment: (projectId, deploymentId) => request(`/api/projects/${projectId}/ship/rollback`, { method: 'POST', body: JSON.stringify({ deploymentId }) }),

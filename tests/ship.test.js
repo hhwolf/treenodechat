@@ -148,3 +148,51 @@ test('picks the best test link and supports preview deployments', async () => {
   await ship.triggerDeployment(project, { ref: 'main', target: 'weird' });
   assert.equal(calls[1].body.target, 'production');
 });
+
+test('releases in one step: reuse or open the PR, merge, and deploy when not git-connected', async () => {
+  const fetchImpl = fakeFetch([
+    { method: 'GET', match: /repos\/owner\/repo$/, status: 200, body: { default_branch: 'main' } },
+    { method: 'GET', match: /\/pulls\?state=open/, status: 200, body: [] },
+    { method: 'POST', match: /\/pulls$/, status: 201, body: { number: 21, html_url: 'https://github.com/owner/repo/pull/21', title: 'Threadline: ship threadline/preflop-lab-abc123' } },
+    { method: 'PUT', match: /\/pulls\/21\/merge$/, status: 200, body: { merged: true, sha: 'relsha' } },
+    { method: 'GET', match: /\/v9\/projects\/prj_1\?/, status: 200, body: { id: 'prj_1' } },
+    { method: 'POST', match: /\/v13\/deployments/, status: 200, body: { id: 'dpl_rel', url: 'rel.vercel.app', readyState: 'QUEUED' } }
+  ]);
+  const ship = createShip({ githubToken: 'gh', vercelToken: 'vc', fetchImpl });
+  const result = await ship.release(project, {});
+  assert.equal(result.pull.number, 21);
+  assert.equal(result.merge.merged, true);
+  assert.equal(result.deployment.id, 'dpl_rel');
+  const deploy = fetchImpl.calls.find((call) => call.url.includes('/v13/deployments'));
+  assert.equal(deploy.body.gitSource.ref, 'main');
+  assert.equal(deploy.body.target, 'production');
+
+  const linked = createShip({
+    githubToken: 'gh', vercelToken: 'vc',
+    fetchImpl: fakeFetch([
+      { method: 'GET', match: /repos\/owner\/repo$/, status: 200, body: { default_branch: 'main' } },
+      { method: 'GET', match: /\/pulls\?state=open/, status: 200, body: [{ number: 8, html_url: 'https://github.com/owner/repo/pull/8', title: 'Existing' }] },
+      { method: 'PUT', match: /\/pulls\/8\/merge$/, status: 200, body: { merged: true, sha: 'sha8' } },
+      { method: 'GET', match: /\/v9\/projects\/prj_1\?/, status: 200, body: { id: 'prj_1', link: { type: 'github' } } }
+    ])
+  });
+  const reused = await linked.release(project, {});
+  assert.equal(reused.pull.number, 8);
+  assert.match(reused.deployment.note, /automatically/);
+});
+
+test('auto-detects the Vercel project for the connected repository and persists it', async () => {
+  const saved = [];
+  const store = { updateShipSettings: async (projectId, settings) => { saved.push({ projectId, settings }); } };
+  const fetchImpl = fakeFetch([
+    { method: 'GET', match: /\/v2\/teams/, status: 200, body: { teams: [{ id: 'team_9' }] } },
+    { method: 'GET', match: /\/v10\/projects\?search=repo&limit=20$/, status: 200, body: { projects: [] } },
+    { method: 'GET', match: /\/v10\/projects\?search=repo&limit=20&teamId=team_9/, status: 200, body: { projects: [{ id: 'prj_found', name: 'repo', link: { type: 'github', org: 'owner', repo: 'repo' } }] } },
+    { method: 'GET', match: /\/v6\/deployments/, status: 200, body: { deployments: [] } }
+  ]);
+  const ship = createShip({ githubToken: '', vercelToken: 'vc', fetchImpl, store });
+  const bare = { ...project, shipSettings: { vercelProjectId: '', vercelTeamId: '' } };
+  const status = await ship.status(bare);
+  assert.equal(status.configured.vercel, true);
+  assert.deepEqual(saved, [{ projectId: project.id, settings: { vercelProjectId: 'prj_found', vercelTeamId: 'team_9' } }]);
+});

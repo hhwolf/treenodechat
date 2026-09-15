@@ -22,7 +22,7 @@ function scriptedFetch(pages, requests = []) {
   return fetchImpl;
 }
 
-function setup(t, pages, runtimeOverrides = {}) {
+function setup(t, pages, runtimeOverrides = {}, options = {}) {
   const store = createStore(':memory:');
   t.after(() => store.close());
   const project = store.createProject({ name: 'Chat project', repoPath: '/tmp/repo', brief: 'Chat-first orchestration' });
@@ -34,7 +34,7 @@ function setup(t, pages, runtimeOverrides = {}) {
     ...runtimeOverrides
   };
   const fetchImpl = scriptedFetch(pages);
-  const orchestrator = createOrchestrator(store, { agentRuntime, fetchImpl, apiKey: 'test-key', model: 'test-model' });
+  const orchestrator = createOrchestrator(store, { agentRuntime, ship: options.ship, fetchImpl, apiKey: 'test-key', model: 'test-model' });
   return { store, project, orchestrator, fetchImpl };
 }
 
@@ -50,6 +50,7 @@ test('answers a plain message with project context and no tools executed', async
   const request = fetchImpl.requests[0].body;
   assert.match(request.instructions, /orchestrator for the project "Chat project"/);
   assert.match(request.instructions, /### CLAUDE\.md/);
+  assert.match(request.instructions, /Autonomy: DIRECT/);
   assert.ok(request.tools.some((tool) => tool.name === 'start_agent_run'));
   assert.deepEqual(request.input.at(-1), { role: 'user', content: 'What should we do first?' });
 });
@@ -209,4 +210,41 @@ test('suppresses next steps when directions are proposed', async (t) => {
   const turn = await orchestrator.runChatTurn(project.id, userNode);
   assert.equal(turn.directions.length, 2);
   assert.deepEqual(turn.nextSteps, []);
+});
+
+test('direct mode opens pull requests itself but still gates the release', async (t) => {
+  const shipCalls = [];
+  const ship = {
+    createPullRequest: async (project, input) => { shipCalls.push(input); return { number: 12, url: 'https://github.com/o/r/pull/12', title: input.title }; }
+  };
+  const { store, project, orchestrator } = setup(t, [
+    callPayload('create_pull_request', { title: 'Ship the drill summary' }),
+    callPayload('ship_release', { title: 'Release the drill summary' }, 'call-2'),
+    textPayload('Pull request opened; approve the release card to go live.')
+  ], {}, { ship });
+  const userNode = store.appendChatNode(project.id, { role: 'user', content: 'Ship it' });
+  const turn = await orchestrator.runChatTurn(project.id, userNode);
+
+  assert.equal(shipCalls.length, 1);
+  assert.equal(shipCalls[0].title, 'Ship the drill summary');
+  const prAction = turn.actions.find((action) => action.tool === 'create_pull_request');
+  assert.equal(prAction.status, 'done');
+  assert.match(prAction.result, /#12/);
+  const releaseAction = turn.actions.find((action) => action.tool === 'ship_release');
+  assert.equal(releaseAction.status, 'needs_approval');
+});
+
+test('review mode proposes pull requests instead of opening them', async (t) => {
+  const ship = { createPullRequest: async () => { throw new Error('must not run'); } };
+  const { store, project, orchestrator, fetchImpl } = setup(t, [
+    callPayload('create_pull_request', { title: 'Careful now' }),
+    textPayload('I proposed the pull request for your approval.')
+  ], {}, { ship });
+  store.updateProjectSettings(project.id, { autonomy: 'review' });
+  const userNode = store.appendChatNode(project.id, { role: 'user', content: 'Open a PR' });
+  const turn = await orchestrator.runChatTurn(project.id, userNode);
+
+  assert.match(fetchImpl.requests[0].body.instructions, /Autonomy: REVIEW/);
+  assert.equal(turn.actions[0].tool, 'create_pull_request');
+  assert.equal(turn.actions[0].status, 'needs_approval');
 });

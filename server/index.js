@@ -15,8 +15,8 @@ const dbPath = process.env.THREADLINE_DB_PATH || join(root, '.threadline', 'thre
 const store = createStore(dbPath, { seed: process.env.THREADLINE_EMPTY !== '1' });
 const interruptedRuns = store.recoverInterruptedRuns();
 const agentRuntime = createAgentRuntime(store, { stateRoot: dirname(dbPath) });
-const orchestrator = createOrchestrator(store, { agentRuntime });
-const ship = createShip({});
+const ship = createShip({ store });
+const orchestrator = createOrchestrator(store, { agentRuntime, ship });
 const handleApi = createApiHandler(store, { agentRuntime, orchestrator, ship });
 let vite;
 
