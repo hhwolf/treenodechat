@@ -256,6 +256,11 @@ test('verifies a completed run and stores the project verify command', async (t)
   });
   assert.equal(settings.response.status, 200);
   assert.equal(settings.payload.project.verifyCommand, 'npm run test:browser');
+  const autonomy = await request(`/api/projects/${project.id}/settings`, {
+    method: 'PATCH', body: JSON.stringify({ autonomy: 'review' })
+  });
+  assert.equal(autonomy.payload.project.autonomy, 'review');
+  assert.equal(autonomy.payload.project.verifyCommand, 'npm run test:browser');
 
   const unsupported = await setup(t);
   const bareProject = unsupported.store.createProject({ name: 'Review only', brief: 'No runtime' });
@@ -355,4 +360,27 @@ test('runs a chat turn, persists the tree, and gates action approvals', async (t
   const bareProject = noOrchestrator.store.createProject({ name: 'No chat', brief: 'x' });
   const blocked = await noOrchestrator.request(`/api/projects/${bareProject.id}/chat`, { method: 'POST', body: JSON.stringify({ message: 'hi' }) });
   assert.equal(blocked.response.status, 503);
+});
+
+test('ships a release through one endpoint', async (t) => {
+  const store = createStore(':memory:');
+  const releases = [];
+  const ship = {
+    status: async () => ({ configured: { github: true, vercel: false } }),
+    release: async (project, input) => { releases.push(input); return { pull: { number: 3 }, merge: { merged: true, sha: 'relsha' }, deployment: null }; }
+  };
+  const handler = createApiHandler(store, { ship });
+  const server = createServer(async (request, response) => { if (!(await handler(request, response))) { response.writeHead(404); response.end(); } });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  t.after(async () => { await new Promise((resolve) => server.close(resolve)); store.close(); });
+
+  const project = store.createProject({ name: 'Release API', brief: 'One-step shipping' });
+  const response = await fetch(`${base}/api/projects/${project.id}/ship/release`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ title: 'Go live' })
+  });
+  const payload = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(payload.result.merge.merged, true);
+  assert.equal(releases[0].title, 'Go live');
 });

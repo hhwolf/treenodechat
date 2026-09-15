@@ -48,15 +48,23 @@ test('gives rules one home: intent, documents, sync, and verify command', () => 
 });
 
 test('gates every ship action behind explicit confirmation', () => {
-  for (const phrase of ['Create pull request', 'Merge', 'Deploy to production', 'Roll back to this', 'Environment variables']) {
+  for (const phrase of ['Create pull request', 'Merge', 'Deploy to production', 'Roll back to this', 'Environment variables', 'Ship to production']) {
     assert.match(ship, new RegExp(phrase));
   }
-  assert.match(ship, /confirmTyped\('merge'/);
-  assert.match(ship, /confirmTyped\('deploy'/);
+  assert.match(ship, /window\.confirm\(`Ship it\?/);
+  assert.match(ship, /window\.confirm\(`Squash-merge/);
   assert.match(ship, /confirmTyped\('rollback'/);
   assert.match(ship, /never displayed/);
   assert.match(chat, /requires your approval/);
   assert.match(chat, /Approve & run/);
+  assert.match(chat, /ship_release/);
+});
+
+test('offers a direct mode that implements without waiting', () => {
+  assert.match(chat, /Direct mode \{directMode \? 'on' : 'off'\}/);
+  assert.match(chat, /autoContinued/);
+  assert.match(chat, /Direct mode paused after several automatic steps/);
+  assert.match(styles, /\.autonomy-toggle/);
 });
 
 test('makes the autonomy boundary visible', () => {

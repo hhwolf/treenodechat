@@ -372,6 +372,10 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
           json(response, 200, { result: await ship.mergePullRequest(project, mergeMatch[1]) });
           return true;
         }
+        if (rest === 'release' && request.method === 'POST') {
+          json(response, 200, { result: await ship.release(project, await readBody(request)) });
+          return true;
+        }
         if (rest === 'deploy' && request.method === 'POST') {
           json(response, 201, { deployment: await ship.triggerDeployment(project, await readBody(request)) });
           return true;
@@ -431,7 +435,7 @@ export function createApiHandler(store, { agentRuntime, repositoryInspector = in
       const settingsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/settings$/);
       if (settingsMatch && request.method === 'PATCH') {
         const body = await readBody(request);
-        const project = await store.updateProjectSettings(settingsMatch[1], { verifyCommand: body.verifyCommand });
+        const project = await store.updateProjectSettings(settingsMatch[1], { verifyCommand: body.verifyCommand, autonomy: body.autonomy });
         json(response, project ? 200 : 404, project ? { project } : { error: 'Project not found' });
         return true;
       }

@@ -16,6 +16,7 @@ export function ShipView({ project, notify, status, onRefresh }) {
   };
   useEffect(() => { setEnvs(null); refresh(); }, [project.id]);
   useEffect(() => { if (status?.branch && !deployRef) setDeployRef(status.branch); }, [status?.branch]);
+  useEffect(() => { setSettings(project.shipSettings || { vercelProjectId: '', vercelTeamId: '' }); }, [project.id, project.shipSettings?.vercelProjectId]);
 
   const act = async (fn, toast) => {
     setBusy(true);
@@ -30,7 +31,7 @@ export function ShipView({ project, notify, status, onRefresh }) {
     <header className="view-heading"><div><span className="eyebrow">Ship</span><h1>From accepted code to production</h1><p>Push the threadline branch through a pull request, deploy on Vercel, and manage environment variables. Every action here requires your explicit confirmation.</p></div><Button onClick={refresh}>Refresh</Button></header>
 
     <section className="rules-card">
-      <header><div><span className="eyebrow">Vercel link</span><h2>Ship settings</h2><p>Point Threadline at the Vercel project that hosts this repository.</p></div></header>
+      <header><div><span className="eyebrow">Vercel link</span><h2>Ship settings</h2><p>Auto-detected from the connected repository when VERCEL_TOKEN is set — override here only if detection picks the wrong project.</p></div></header>
       <form className="ship-settings" onSubmit={(event) => { event.preventDefault(); act(() => api.updateShipSettings(project.id, settings), 'Ship settings saved'); }}>
         <input value={settings.vercelProjectId} placeholder="Vercel project id (prj_…)" aria-label="Vercel project id" onChange={(event) => setSettings({ ...settings, vercelProjectId: event.target.value })} />
         <input value={settings.vercelTeamId} placeholder="Team id (team_…, optional)" aria-label="Vercel team id" onChange={(event) => setSettings({ ...settings, vercelTeamId: event.target.value })} />
@@ -40,11 +41,17 @@ export function ShipView({ project, notify, status, onRefresh }) {
     </section>
 
     <section className="rules-card">
-      <header><div><span className="eyebrow">GitHub</span><h2>{status.branch}</h2><p>{status.compare ? `${status.compare.aheadBy} commit${status.compare.aheadBy === 1 ? '' : 's'} ahead of ${status.defaultBranch}${status.compare.behindBy ? `, ${status.compare.behindBy} behind` : ''}.` : status.errors?.github || 'Accepted agent code lands on this branch.'}</p></div></header>
+      <header><div><span className="eyebrow">GitHub</span><h2>{status.branch}</h2><p>{status.compare ? `${status.compare.aheadBy} commit${status.compare.aheadBy === 1 ? '' : 's'} ahead of ${status.defaultBranch}${status.compare.behindBy ? `, ${status.compare.behindBy} behind` : ''}.` : status.errors?.github || 'Accepted agent code lands on this branch.'}</p></div>
+        {status.configured.github && <Button variant="primary" icon="ship" disabled={busy} onClick={() => {
+          if (window.confirm(`Ship it? This merges ${status.branch} into ${status.defaultBranch || 'main'} and deploys production in one step.`)) {
+            act(() => api.shipRelease(project.id, {}), 'Shipped — merged and deploying');
+          }
+        }}>Ship to production</Button>}
+      </header>
       {status.pulls.length > 0 && <div className="ship-list">
         {status.pulls.map((pull) => <div className="ship-row" key={pull.number}>
           <div><strong>#{pull.number} {pull.title}</strong><small><a href={pull.url} target="_blank" rel="noreferrer">Open on GitHub</a></small></div>
-          <Button variant="primary" disabled={busy} onClick={() => { if (confirmTyped('merge', `Squash-merge pull request #${pull.number} into ${status.defaultBranch}.`)) act(() => api.mergePullRequest(project.id, pull.number), `Pull request #${pull.number} merged`); }}>Merge</Button>
+          <Button variant="primary" disabled={busy} onClick={() => { if (window.confirm(`Squash-merge pull request #${pull.number} into ${status.defaultBranch}?`)) act(() => api.mergePullRequest(project.id, pull.number), `Pull request #${pull.number} merged`); }}>Merge</Button>
         </div>)}
       </div>}
       {status.configured.github && !status.pulls.length && <form className="ship-settings" onSubmit={(event) => {
@@ -78,7 +85,7 @@ export function ShipView({ project, notify, status, onRefresh }) {
 
     {status.configured.vercel && <section className="rules-card">
       <header><div><span className="eyebrow">Vercel</span><h2>Deployments</h2><p>{status.errors?.vercel || 'Trigger production deployments and roll back when needed.'}</p></div></header>
-      <form className="ship-settings" onSubmit={(event) => { event.preventDefault(); if (confirmTyped('deploy', `Deploy ${deployRef} to production.`)) act(() => api.triggerDeployment(project.id, { ref: deployRef }), 'Deployment started'); }}>
+      <form className="ship-settings" onSubmit={(event) => { event.preventDefault(); if (window.confirm(`Deploy ${deployRef} to production?`)) act(() => api.triggerDeployment(project.id, { ref: deployRef }), 'Deployment started'); }}>
         <input value={deployRef} aria-label="Git ref to deploy" onChange={(event) => setDeployRef(event.target.value)} />
         <Button type="submit" variant="primary" icon="ship" disabled={busy || !deployRef.trim()}>Deploy to production</Button>
       </form>

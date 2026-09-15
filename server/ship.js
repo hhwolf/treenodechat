@@ -8,7 +8,8 @@ function shipError(message, status = 422) {
 export function createShip({
   githubToken = process.env.GITHUB_TOKEN,
   vercelToken = process.env.VERCEL_TOKEN,
-  fetchImpl = fetch
+  fetchImpl = fetch,
+  store
 } = {}) {
   const scrub = (text) => {
     let value = String(text || '');
@@ -34,10 +35,8 @@ export function createShip({
     return body;
   }
 
-  async function vercel(project, path, options = {}) {
+  async function vercelApi(path, { teamId = '', ...options } = {}) {
     if (!vercelToken) throw shipError('Configure VERCEL_TOKEN to use Vercel shipping');
-    if (!project.shipSettings?.vercelProjectId) throw shipError('Set the Vercel project id in Ship settings first');
-    const teamId = project.shipSettings.vercelTeamId;
     const url = new URL(`https://api.vercel.com${path}`);
     if (teamId) url.searchParams.set('teamId', teamId);
     const response = await fetchImpl(url.toString(), {
@@ -49,7 +48,45 @@ export function createShip({
     return body;
   }
 
-  async function status(project) {
+  async function vercel(project, path, options = {}) {
+    if (!project.shipSettings?.vercelProjectId) throw shipError('Set the Vercel project id in Ship settings first');
+    return vercelApi(path, { teamId: project.shipSettings.vercelTeamId, ...options });
+  }
+
+  // Finds the Vercel project that hosts the connected repository so nobody
+  // has to paste prj_/team_ ids by hand; the match is persisted when found.
+  async function autoDetectVercelProject(project) {
+    const current = project.shipSettings || {};
+    if (!vercelToken || !project.repoPath || current.vercelProjectId) return current;
+    let owner = '';
+    let repo = '';
+    try { ({ owner, repo } = parseGitHubRepository(project.repoPath)); } catch { return current; }
+    const scopes = [''];
+    try {
+      const teams = await vercelApi('/v2/teams?limit=20');
+      for (const team of teams.teams || []) scopes.push(team.id);
+    } catch { /* personal scope only */ }
+    for (const teamId of scopes) {
+      try {
+        const found = await vercelApi(`/v10/projects?search=${encodeURIComponent(repo)}&limit=20`, { teamId });
+        const projects = found.projects || [];
+        const match = projects.find((item) => item.link?.type === 'github'
+            && String(item.link.org || '').toLowerCase() === owner.toLowerCase()
+            && String(item.link.repo || '').toLowerCase() === repo.toLowerCase())
+          || projects.find((item) => item.name === repo);
+        if (match) {
+          const settings = { vercelProjectId: match.id, vercelTeamId: teamId };
+          if (store?.updateShipSettings) await store.updateShipSettings(project.id, settings);
+          return settings;
+        }
+      } catch { /* keep searching the remaining scopes */ }
+    }
+    return current;
+  }
+
+  async function status(rawProject) {
+    const shipSettings = await autoDetectVercelProject(rawProject);
+    const project = { ...rawProject, shipSettings: { ...rawProject.shipSettings, ...shipSettings } };
     const configured = {
       github: Boolean(githubToken && project.repoPath),
       vercel: Boolean(vercelToken && project.shipSettings?.vercelProjectId)
@@ -140,6 +177,31 @@ export function createShip({
     return { ok: true, jobId: promoted.jobId || null };
   }
 
+  // One direct action: reuse or open the pull request for the integration
+  // branch, squash-merge it, and make sure production picks it up.
+  async function release(rawProject, input = {}) {
+    const shipSettings = await autoDetectVercelProject(rawProject);
+    const project = { ...rawProject, shipSettings: { ...rawProject.shipSettings, ...shipSettings } };
+    const metadata = await github(project, '');
+    const base = metadata.default_branch || 'main';
+    const branch = integrationBranchName(project);
+    const { owner } = parseGitHubRepository(project.repoPath);
+    const open = await github(project, `/pulls?state=open&head=${encodeURIComponent(`${owner}:${branch}`)}`);
+    const pull = open[0]
+      ? { number: open[0].number, url: open[0].html_url, title: open[0].title }
+      : await createPullRequest(project, { title: String(input.title || `Threadline: ship ${branch}`), body: input.body });
+    const merge = await mergePullRequest(project, pull.number);
+    if (!merge.merged) throw shipError(merge.message || `Pull request #${pull.number} could not be merged`);
+    let deployment = null;
+    if (vercelToken && project.shipSettings.vercelProjectId) {
+      const details = await vercel(project, `/v9/projects/${encodeURIComponent(project.shipSettings.vercelProjectId)}`).catch(() => null);
+      deployment = details?.link
+        ? { note: 'Vercel is connected to the repository and deploys the merge automatically.' }
+        : await triggerDeployment(project, { ref: base, target: 'production' });
+    }
+    return { pull, merge, deployment, base, branch };
+  }
+
   async function listEnv(project) {
     const listed = await vercel(project, `/v9/projects/${encodeURIComponent(project.shipSettings.vercelProjectId)}/env`);
     return (listed.envs || []).map((env) => ({ id: env.id, key: env.key, target: env.target, type: env.type, updatedAt: env.updatedAt }));
@@ -160,5 +222,5 @@ export function createShip({
     return { ok: true };
   }
 
-  return { status, createPullRequest, mergePullRequest, triggerDeployment, rollbackDeployment, listEnv, createEnv, deleteEnv };
+  return { status, createPullRequest, mergePullRequest, triggerDeployment, rollbackDeployment, release, listEnv, createEnv, deleteEnv };
 }

@@ -6,7 +6,7 @@ import { repositoryContext } from './repository.js';
 const MAX_TOOL_ROUNDS = 4;
 const TURN_BUDGET_MS = 120_000;
 const INTEGRATE_BUDGET_MS = 90_000;
-const SHIP_TOOLS = new Set(['create_pull_request', 'merge_pull_request', 'trigger_deployment', 'rollback_deployment', 'set_env_var']);
+const SHIP_TOOLS = new Set(['create_pull_request', 'merge_pull_request', 'trigger_deployment', 'rollback_deployment', 'set_env_var', 'ship_release']);
 
 const TOOLS = [
   {
@@ -55,6 +55,11 @@ const TOOLS = [
   {
     type: 'function', name: 'create_pull_request',
     description: 'Propose opening a pull request from the Threadline project branch into the default branch. Requires explicit user approval.',
+    parameters: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' } }, required: ['title'], additionalProperties: false }
+  },
+  {
+    type: 'function', name: 'ship_release',
+    description: 'Propose shipping the accepted work in ONE step: open (or reuse) the pull request for the Threadline branch, squash-merge it into the default branch, and deploy production. Prefer this over separate merge/deploy proposals. Requires explicit user approval.',
     parameters: { type: 'object', properties: { title: { type: 'string' }, body: { type: 'string' } }, required: ['title'], additionalProperties: false }
   },
   {
@@ -129,12 +134,16 @@ function runsDigest(project, engineBranchId) {
 
 function buildSystemPrompt(project, engineBranchId) {
   const repository = repositoryContext(project.repository);
+  const direct = project.autonomy !== 'review';
   return [
     `You are Threadline, the orchestrator for the project "${project.name}". You converse with the user and get real work done by deploying coding agents and tools. Be concrete, honest about uncertainty, and concise.`,
     `Tool policy:
 - start_agent_run for any code change or investigation that needs the repository; keep each task narrow and verifiable. Runs continue in the background — never claim results you have not read via get_run_status, and never fabricate run output.
-- verify_run after a run completes when tests would add confidence; integrate_run only for reviewed changes the user asked to accept.
-- create_pull_request / merge_pull_request / trigger_deployment / rollback_deployment / set_env_var only PROPOSE the action; each requires the user's explicit approval in the interface. Say clearly what you proposed and why.
+${direct
+    ? `- Autonomy: DIRECT. Complete the user's request end to end without waiting: when a run has completed, get_run_status, verify_run, and integrate_run the passing changes immediately, then start any follow-up run the task still needs. You may open pull requests yourself with create_pull_request.
+- ship_release / merge_pull_request / trigger_deployment / rollback_deployment / set_env_var only PROPOSE the action; each requires the user's explicit approval in the interface. When the user asks to ship, prefer one ship_release proposal over separate steps.`
+    : `- Autonomy: REVIEW. Wait for the user between steps: report run results and ask before verifying, integrating, or shipping.
+- create_pull_request / ship_release / merge_pull_request / trigger_deployment / rollback_deployment / set_env_var only PROPOSE the action; each requires the user's explicit approval in the interface. Say clearly what you proposed and why.`}
 - propose_directions only at genuinely open decisions where 2-3 directions differ materially (for example a deep-research path versus a practical build path). Give reasoning in each summary and recommend one. Otherwise just answer.
 - End every reply by calling suggest_next_steps with 2-4 optional prompts the user may click and edit (use [brackets] for fill-in parts; skip only when you call propose_directions).`,
     `Project intent:
@@ -163,6 +172,7 @@ function localFallback(project, userNode) {
 
 export function createOrchestrator(store, {
   agentRuntime,
+  ship,
   fetchImpl = fetch,
   apiKey = process.env.OPENAI_API_KEY,
   model = process.env.OPENAI_MODEL || 'gpt-5.6-sol',
@@ -249,6 +259,11 @@ export function createOrchestrator(store, {
         state.terminal = true;
         record.result = directions.map((item) => item.label).join(' | ');
         return { status: 'directions_presented', note: 'The user will pick a direction in the interface. Finish your reply with brief framing text only.' };
+      }
+      if (call.name === 'create_pull_request' && project.autonomy !== 'review' && ship) {
+        const pull = await ship.createPullRequest(project, { title: String(args.title || ''), body: args.body });
+        record.result = `opened #${pull.number}: ${pull.url}`;
+        return { number: pull.number, url: pull.url, note: 'Pull request opened. Merging still needs user approval — propose ship_release when the user wants it live.' };
       }
       if (SHIP_TOOLS.has(call.name)) {
         record.status = 'needs_approval';

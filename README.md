@@ -21,6 +21,8 @@ It supports two deliberately compatible runtimes:
 ## What works
 
 - Chat with an orchestrator (OpenAI Responses API) that can start isolated Codex runs, check their status, run verification, and integrate reviewed files — all as model tools with hard budgets.
+- **Direct mode** (default, toggleable per project): the assistant implements end to end — when a run finishes it automatically continues, verifies, integrates passing changes, starts follow-up runs, and can open pull requests itself. Merging, production deploys, rollbacks, and env vars always wait for your approval; automatic continuation pauses after several unattended steps.
+- **One-step shipping**: "Ship to production" (or an approved `ship_release` card in chat) reuses or opens the pull request, squash-merges it, and deploys production. Vercel project ids are auto-detected from the connected repository.
 - Tree-structured conversation: model-proposed directions with reasoning and a recommendation, manual forks from any message, and a Tree tab that maps every branch.
 - Ship-class actions (pull requests, merges, deployments, rollbacks, env vars) can only be *proposed* by the model; each renders an approval card and executes solely on your confirmation.
 - Rules documents stored per project, injected into chat and agent prompts, and committable to the repository's `threadline/…` branch (GitHub Contents API hosted, integration workspace locally).
