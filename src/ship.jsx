@@ -17,6 +17,7 @@ export function ShipView({ project, notify, status, onRefresh }) {
   useEffect(() => { setEnvs(null); refresh(); }, [project.id]);
   useEffect(() => { if (status?.branch && !deployRef) setDeployRef(status.branch); }, [status?.branch]);
   useEffect(() => { setSettings(project.shipSettings || { vercelProjectId: '', vercelTeamId: '' }); }, [project.id, project.shipSettings?.vercelProjectId]);
+  useEffect(() => { if (status?.settings?.vercelProjectId) setSettings(status.settings); }, [status?.settings?.vercelProjectId]);
 
   const act = async (fn, toast) => {
     setBusy(true);
@@ -37,16 +38,21 @@ export function ShipView({ project, notify, status, onRefresh }) {
         <input value={settings.vercelTeamId} placeholder="Team id (team_…, optional)" aria-label="Vercel team id" onChange={(event) => setSettings({ ...settings, vercelTeamId: event.target.value })} />
         <Button type="submit" disabled={busy}>Save</Button>
       </form>
-      {!status.configured.vercel && <p className="quiet-empty">Vercel shipping needs VERCEL_TOKEN on the server plus a project id above. GitHub shipping works independently.</p>}
+      {!status.configured.vercel && <p className="quiet-empty">{status.errors?.vercel || 'Vercel shipping needs VERCEL_TOKEN on the server plus a project id above. GitHub shipping works independently.'}</p>}
     </section>
 
     <section className="rules-card">
       <header><div><span className="eyebrow">GitHub</span><h2>{status.branch}</h2><p>{status.compare ? `${status.compare.aheadBy} commit${status.compare.aheadBy === 1 ? '' : 's'} ahead of ${status.defaultBranch}${status.compare.behindBy ? `, ${status.compare.behindBy} behind` : ''}.` : status.errors?.github || 'Accepted agent code lands on this branch.'}</p></div>
-        {status.configured.github && <Button variant="primary" icon="ship" disabled={busy} onClick={() => {
-          if (window.confirm(`Ship it? This merges ${status.branch} into ${status.defaultBranch || 'main'} and deploys production in one step.`)) {
-            act(() => api.shipRelease(project.id, {}), 'Shipped — merged and deploying');
-          }
-        }}>Ship to production</Button>}
+        {status.configured.github && (() => {
+          const shippable = status.pulls.length > 0 || (status.compare?.aheadBy || 0) > 0;
+          return <Button variant="primary" icon="ship" disabled={busy || !shippable}
+            title={shippable ? '' : 'Nothing to ship yet — integrate accepted agent work first.'}
+            onClick={() => {
+              if (window.confirm(`Ship it? This merges ${status.branch} into ${status.defaultBranch || 'main'} and deploys production in one step.`)) {
+                act(() => api.shipRelease(project.id, {}), 'Shipped — merged and deploying');
+              }
+            }}>Ship to production</Button>;
+        })()}
       </header>
       {status.pulls.length > 0 && <div className="ship-list">
         {status.pulls.map((pull) => <div className="ship-row" key={pull.number}>

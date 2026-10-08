@@ -55,44 +55,52 @@ export function createShip({
 
   // Finds the Vercel project that hosts the connected repository so nobody
   // has to paste prj_/team_ ids by hand; the match is persisted when found.
+  // Returns { settings, note } — note explains a failed detection for the UI.
   async function autoDetectVercelProject(project) {
     const current = project.shipSettings || {};
-    if (!vercelToken || !project.repoPath || current.vercelProjectId) return current;
+    if (!vercelToken || !project.repoPath || current.vercelProjectId) return { settings: current, note: '' };
     let owner = '';
     let repo = '';
-    try { ({ owner, repo } = parseGitHubRepository(project.repoPath)); } catch { return current; }
-    const scopes = [''];
+    try { ({ owner, repo } = parseGitHubRepository(project.repoPath)); } catch { return { settings: current, note: '' }; }
+    try { await vercelApi('/v2/user'); } catch (error) {
+      return { settings: current, note: scrub(`VERCEL_TOKEN was rejected (${error.message}). Create a fresh token under the account that owns the team and update the deployment env.`) };
+    }
+    const scopes = [{ label: 'personal', teamId: '' }];
     try {
-      const teams = await vercelApi('/v2/teams?limit=20');
-      for (const team of teams.teams || []) scopes.push(team.id);
+      const teams = await vercelApi('/v2/teams?limit=50');
+      for (const team of teams.teams || []) scopes.push({ label: team.slug || team.name || team.id, teamId: team.id });
     } catch { /* personal scope only */ }
-    for (const teamId of scopes) {
+    for (const scope of scopes) {
       try {
-        const found = await vercelApi(`/v10/projects?search=${encodeURIComponent(repo)}&limit=20`, { teamId });
+        const found = await vercelApi(`/v10/projects?search=${encodeURIComponent(repo)}&limit=20`, { teamId: scope.teamId });
         const projects = found.projects || [];
         const match = projects.find((item) => item.link?.type === 'github'
             && String(item.link.org || '').toLowerCase() === owner.toLowerCase()
             && String(item.link.repo || '').toLowerCase() === repo.toLowerCase())
           || projects.find((item) => item.name === repo);
         if (match) {
-          const settings = { vercelProjectId: match.id, vercelTeamId: teamId };
+          const settings = { vercelProjectId: match.id, vercelTeamId: scope.teamId };
           if (store?.updateShipSettings) await store.updateShipSettings(project.id, settings);
-          return settings;
+          return { settings, note: '' };
         }
       } catch { /* keep searching the remaining scopes */ }
     }
-    return current;
+    return {
+      settings: current,
+      note: `No Vercel project named "${repo}" or linked to ${owner}/${repo} is visible to VERCEL_TOKEN (searched: ${scopes.map((scope) => scope.label).join(', ')}). If the project lives in another team, the token's account must be a member of it.`
+    };
   }
 
   async function status(rawProject) {
-    const shipSettings = await autoDetectVercelProject(rawProject);
-    const project = { ...rawProject, shipSettings: { ...rawProject.shipSettings, ...shipSettings } };
+    const detected = await autoDetectVercelProject(rawProject);
+    const project = { ...rawProject, shipSettings: { ...rawProject.shipSettings, ...detected.settings } };
     const configured = {
       github: Boolean(githubToken && project.repoPath),
       vercel: Boolean(vercelToken && project.shipSettings?.vercelProjectId)
     };
     const branch = integrationBranchName(project);
     const result = { settings: project.shipSettings || {}, configured, branch, defaultBranch: null, compare: null, pulls: [], deployments: [], testLink: null, errors: {} };
+    if (!configured.vercel && detected.note) result.errors.vercel = detected.note;
     if (configured.github) {
       try {
         const { owner } = parseGitHubRepository(project.repoPath);
@@ -180,8 +188,8 @@ export function createShip({
   // One direct action: reuse or open the pull request for the integration
   // branch, squash-merge it, and make sure production picks it up.
   async function release(rawProject, input = {}) {
-    const shipSettings = await autoDetectVercelProject(rawProject);
-    const project = { ...rawProject, shipSettings: { ...rawProject.shipSettings, ...shipSettings } };
+    const detected = await autoDetectVercelProject(rawProject);
+    const project = { ...rawProject, shipSettings: { ...rawProject.shipSettings, ...detected.settings } };
     const metadata = await github(project, '');
     const base = metadata.default_branch || 'main';
     const branch = integrationBranchName(project);
