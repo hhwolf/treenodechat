@@ -169,8 +169,12 @@ export function App() {
 
   const refreshShip = async (projectId = project?.id) => {
     if (!projectId) return;
-    try { setShipStatus(await api.shipStatus(projectId)); }
-    catch { setShipStatus(null); }
+    try {
+      setShipStatus(await api.shipStatus(projectId));
+      // Detection may have persisted ship settings server-side; reflect them.
+      const fresh = await api.getProject(projectId);
+      setProject(fresh.project);
+    } catch { setShipStatus(null); }
   };
 
   useEffect(() => {

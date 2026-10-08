@@ -185,6 +185,7 @@ test('auto-detects the Vercel project for the connected repository and persists 
   const saved = [];
   const store = { updateShipSettings: async (projectId, settings) => { saved.push({ projectId, settings }); } };
   const fetchImpl = fakeFetch([
+    { method: 'GET', match: /\/v2\/user/, status: 200, body: { user: {} } },
     { method: 'GET', match: /\/v2\/teams/, status: 200, body: { teams: [{ id: 'team_9' }] } },
     { method: 'GET', match: /\/v10\/projects\?search=repo&limit=20$/, status: 200, body: { projects: [] } },
     { method: 'GET', match: /\/v10\/projects\?search=repo&limit=20&teamId=team_9/, status: 200, body: { projects: [{ id: 'prj_found', name: 'repo', link: { type: 'github', org: 'owner', repo: 'repo' } }] } },
@@ -195,4 +196,31 @@ test('auto-detects the Vercel project for the connected repository and persists 
   const status = await ship.status(bare);
   assert.equal(status.configured.vercel, true);
   assert.deepEqual(saved, [{ projectId: project.id, settings: { vercelProjectId: 'prj_found', vercelTeamId: 'team_9' } }]);
+});
+
+test('explains why detection failed instead of staying silently blank', async () => {
+  const rejected = createShip({
+    githubToken: '', vercelToken: 'vc-dead',
+    fetchImpl: async (url) => String(url).includes('/v2/user')
+      ? { ok: false, status: 403, json: async () => ({ error: { message: 'invalid token' } }) }
+      : { ok: true, status: 200, json: async () => ({}) }
+  });
+  const bare = { ...project, shipSettings: { vercelProjectId: '', vercelTeamId: '' } };
+  const rejectedStatus = await rejected.status(bare);
+  assert.equal(rejectedStatus.configured.vercel, false);
+  assert.match(rejectedStatus.errors.vercel, /rejected/);
+
+  const noMatch = createShip({
+    githubToken: '', vercelToken: 'vc',
+    fetchImpl: async (url) => {
+      const value = String(url);
+      if (value.includes('/v2/user')) return { ok: true, status: 200, json: async () => ({ user: {} }) };
+      if (value.includes('/v2/teams')) return { ok: true, status: 200, json: async () => ({ teams: [{ id: 'team_a', slug: 'asteria' }] }) };
+      return { ok: true, status: 200, json: async () => ({ projects: [] }) };
+    }
+  });
+  const noMatchStatus = await noMatch.status(bare);
+  assert.equal(noMatchStatus.configured.vercel, false);
+  assert.match(noMatchStatus.errors.vercel, /No Vercel project named "repo"/);
+  assert.match(noMatchStatus.errors.vercel, /asteria/);
 });
